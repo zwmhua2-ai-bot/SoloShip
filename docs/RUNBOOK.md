@@ -99,7 +99,7 @@ $PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 315 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 323 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
@@ -143,6 +143,7 @@ git -C $REPO diff --stat
 | `P02_NEEDS_HUMAN` + `.needs_human.json` | 证据冲突或不足 | 人工核对 `.control/p02/finalizing/` 与报告，不要伪造 |
 | `P02_BLOCKED_TEST_COMMAND` / `P01_BLOCKED_TEST_COMMAND` | 测试命令未获可信配置授权 | 看报告里的 `test_command_policy.reason`；要放行必须改 `config/bridge.json` 的 `approved`（需人工授权），**不要**改任务 JSON 或删校验 |
 | 所有任务都被拒，理由是"策略缺失" | `config/bridge.json` 缺 `test_command_policy` 段 | 迁移/新建环境后忘记同步配置；补上 `approved` 段即可，不要回退代码 |
+| 拒绝理由含"解释器所在目录不受信任" | 解释器来自 PATH 靠前的用户目录，或另一套未登记安装 | 这是 PATH 劫持防护（SS-V01-003-R1）。确认该解释器可信后，把它的目录写进 `trusted_interpreter_dirs`；不要退回去信任 PATH |
 | `PermissionError [WinError 5] ... state.json` | 读写与原子替换撞车 | 已由 `_write_json` 退避重试处理；若仍出现，检查是否有外部工具锁文件 |
 | 日志中文乱码 | 历史 GBK 段落 | `supervisor-boot.log` 前若干字节是旧记录，新写入均为 UTF-8；不要就地重写历史 |
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |

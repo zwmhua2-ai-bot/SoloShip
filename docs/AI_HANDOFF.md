@@ -52,7 +52,8 @@
 | 仓库迁移至 E 盘 | 完成 | `b754467` |
 | SS-DOC-001 交接文档体系 | 完成 | `29401af` |
 | SS-DOC-002 交接文档一致性修正 | 完成 | 见交付报告 |
-| SS-V01-003 测试命令授权加固 | 完成 | 见交付报告 |
+| SS-V01-003 测试命令授权加固 | 完成 | `dc25135` |
+| SS-V01-003-R1 测试解释器可信路径验证 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
@@ -74,10 +75,10 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 315 tests in 290.468s — OK`（SS-V01-003 交付前实测，`-v` 全量） |
-| 时间 | 2026-10-24 02:35（本地） |
+| 结果 | `Ran 323 tests in 282.039s — OK`（SS-V01-003-R1 交付前实测） |
+| 时间 | 2026-10-24 02:48（本地） |
 | 证据来源 | 本机实际执行输出（`PYTHONDONTWRITEBYTECODE=1`） |
-| 上一基线 | `289 OK`（2026-10-24 01:14，SS-DOC-001 期间），新增 26 项策略回归后升为 315 |
+| 上一基线 | `315 OK`（2026-10-24 02:35，SS-V01-003），新增 8 项 R1 回归后升为 323 |
 | 之后是否复跑 | 无。接手后须自行复跑；不得把上面这行当成"我刚跑过" |
 
 ## 6. 运行状态（必须重新核实）
@@ -106,6 +107,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | `windows_test_mode.enabled` | `true`（`risk_accepted=true`） |
 | `isolation_claim` | `NONE`（明示无操作系统级隔离） |
 | `test_command_policy.approved` | 仅 2 条 `-m unittest discover -s tests`（含 `-v`）；缺失/非法即拒绝执行测试 |
+| 解释器信任来源 | 固定目录（解释器目录 / `base_prefix` / `SystemRoot` / `trusted_interpreter_dirs`），**PATH 不参与**；执行用验证后的绝对路径 |
 
 > **上表是"配置声明"，不等于"运行时检查"。**
 > 真实生效方式见 `AGENTS.md` §7 的开关表：`github.enabled` 与 `require_env_token`
@@ -136,7 +138,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 ```bash
 cd /e/Documents/AI-Developer/repositories/SoloShip      # 或 Windows 路径
 git rev-parse HEAD && git status --short                # 核对版本与工作区
-python -m unittest discover -s tests                    # 确认 315 项基线
+python -m unittest discover -s tests                    # 确认 323 项基线
 python bridge/supervisor.py status --root .             # 重新核实运行态
 ```
 

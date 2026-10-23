@@ -87,7 +87,9 @@ class ResolveTests(unittest.TestCase):
     def test_approved_command_allowed(self):
         ok, argv, reason, source = self.resolve(GOOD_CMD)
         self.assertTrue(ok, reason)
-        self.assertEqual(argv, GOOD_CMD)
+        # 放行时 argv[0] 必须是验证过的绝对路径（SS-V01-003-R1）
+        self.assertEqual(argv[0], str(Path(sys.executable).resolve()))
+        self.assertEqual(argv[1:], GOOD_CMD[1:])
         self.assertEqual(source, "config")
 
     def test_short_discover_allowed(self):
@@ -101,8 +103,9 @@ class ResolveTests(unittest.TestCase):
         ok, argv, reason, _source = self.resolve(
             ["py", "-3", "-m", "unittest", "discover", "-s", "tests", "-v"])
         self.assertTrue(ok, reason)
-        # 匹配时忽略启动器版本参数，但执行时保留原始 argv（交给 py 自己选版本）
-        self.assertEqual(argv, ["py", "-3", "-m", "unittest", "discover", "-s", "tests", "-v"])
+        # 匹配时忽略启动器版本参数；执行为验证过的绝对路径，参数原样保留
+        self.assertTrue(Path(argv[0]).is_absolute(), argv)
+        self.assertEqual(argv[1:], ["-3", "-m", "unittest", "discover", "-s", "tests", "-v"])
 
     def test_python_dash_c_rejected(self):
         ok, _argv, reason, _source = self.resolve([sys.executable, "-c", "print('x')"])
@@ -323,6 +326,108 @@ class P01ExecutionTests(unittest.TestCase):
         task["workspace"] = {"repo": "repo", "base_ref": "HEAD", "allow_paths": ["src"]}
         errors = p01_bridge.validate_p01_task(task, self.tmp)
         self.assertTrue(any("test_command" in item for item in errors), errors)
+
+
+class PathHijackTests(unittest.TestCase):
+    """SS-V01-003-R1：PATH 劫持不得获得授权；执行路径必须与校验路径一致。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="policyhijack-"))
+        fx.write_config(self.tmp)
+        self.evil = self.tmp / "user-writable"
+        self.evil.mkdir()
+        for name in ("python.exe", "python", "py.exe", "py"):
+            (self.evil / name).write_bytes(b"")  # 仅用于路径解析，绝不执行
+        self.bridge = p02_bridge.P02Bridge(
+            self.tmp, codex_cmd=[sys.executable, FAKE_CODEX],
+            sandbox_status="SANDBOX_UNENFORCED")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def hijacked_path(self) -> str:
+        return str(self.evil) + os.pathsep + os.environ.get("PATH", "")
+
+    def test_ac_r1_path_hijack_not_trusted(self):
+        with mock.patch.dict(os.environ, {"PATH": self.hijacked_path()}):
+            policy = test_policy.load_policy(self.tmp)
+            self.assertNotIn(self.evil.resolve(), policy.trusted_dirs,
+                             "PATH 上的目录不得自动进入可信集合")
+            ok, argv, reason, _source = test_policy.resolve(
+                self.tmp, ["python", "-m", "unittest", "discover", "-s", "tests"])
+        self.assertFalse(ok, f"PATH 劫持不应获授权: {argv}")
+        self.assertIn("不受信任", reason)
+
+    def test_ac_r1_py_launcher_hijack_not_trusted(self):
+        with mock.patch.dict(os.environ, {"PATH": self.hijacked_path()}):
+            ok, _argv, reason, _source = test_policy.resolve(
+                self.tmp, ["py", "-3", "-m", "unittest", "discover", "-s", "tests"])
+        self.assertFalse(ok, "py 启动器同样不得从 PATH 获信")
+        self.assertIn("不受信任", reason)
+
+    def test_ac_r2_exec_uses_validated_absolute_path(self):
+        fake = subprocess.CompletedProcess(args=["x"], returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(subprocess, "run", return_value=fake) as run:
+            result = self.bridge.run_tests(
+                [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+                self.tmp, 30)
+        self.assertNotIn("policy_blocked", result)
+        executed = run.call_args[0][0]
+        self.assertTrue(Path(executed[0]).is_absolute(), executed)
+        self.assertEqual(executed[0], str(Path(sys.executable).resolve()))
+        self.assertEqual(executed[1:], ["-m", "unittest", "discover", "-s", "tests", "-v"])
+
+    def test_ac_r2_bare_name_becomes_absolute(self):
+        """裸名字即使放行，也必须变成绝对路径，避免执行时再经 PATH 解析一次。"""
+        if not shutil.which("python"):
+            self.skipTest("本机没有可解析的 python")
+        ok, argv, reason, _source = test_policy.resolve(
+            self.tmp, ["python", "-m", "unittest", "discover", "-s", "tests"])
+        if not ok:
+            self.skipTest(f"本机 python 解析位置不在可信目录内：{reason}")
+        self.assertTrue(Path(argv[0]).is_absolute(), argv)
+
+    def test_ac_r3_explicitly_trusted_interpreter_still_works(self):
+        vendor = self.tmp / "vendor-python"
+        vendor.mkdir()
+        exe = vendor / "python.exe"
+        exe.write_bytes(b"")
+        fx.write_config(self.tmp, policy={
+            "schema": test_policy.SCHEMA,
+            "approved": [{"argv": list(fx.APPROVED_DISCOVER)}],
+            "trusted_interpreter_dirs": [str(vendor)],
+        })
+        ok, argv, reason, _source = test_policy.resolve(
+            self.tmp, [str(exe), "-m", "unittest", "discover", "-s", "tests"])
+        self.assertTrue(ok, reason)
+        self.assertEqual(Path(argv[0]), exe.resolve())
+
+    def test_ac_r4_normal_python_and_discover_still_pass(self):
+        for cmd in (
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+        ):
+            ok, argv, reason, _source = test_policy.resolve(self.tmp, cmd)
+            self.assertTrue(ok, reason)
+            self.assertEqual(argv[0], str(Path(sys.executable).resolve()))
+            self.assertEqual(argv[1:], cmd[1:])
+
+    def test_ac_r4_py_launcher_still_pass(self):
+        if not fx.python_launcher_available():
+            self.skipTest("本机没有 py 启动器")
+        ok, argv, reason, _source = test_policy.resolve(
+            self.tmp, ["py", "-3", "-m", "unittest", "discover", "-s", "tests", "-v"])
+        self.assertTrue(ok, reason)
+        self.assertEqual(argv[1:], ["-3", "-m", "unittest", "discover", "-s", "tests", "-v"])
+
+    def test_ac_r5_rejected_before_subprocess(self):
+        with mock.patch.dict(os.environ, {"PATH": self.hijacked_path()}):
+            with mock.patch.object(subprocess, "run") as run:
+                result = self.bridge.run_tests(
+                    ["python", "-m", "unittest", "discover", "-s", "tests"], self.tmp, 30)
+        self.assertTrue(result.get("policy_blocked"), result)
+        self.assertIn("不受信任", result["policy_blocked"])
+        run.assert_not_called()
 
 
 class SupervisorConsistencyTests(unittest.TestCase):

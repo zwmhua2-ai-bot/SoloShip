@@ -12,9 +12,13 @@
    - 名称必须是 `python` / `python.exe` / `python3` / `python3.exe` / `py` / `py.exe`；
    - 必须能解析成真实路径，且解析后（跟随符号链接/联接）的**父目录**在受信任目录集合内。
      「某个绝对路径存在」本身不构成授权。
+   - **PATH 只用于定位候选文件，不构成信任来源**：`shutil.which()` 命中的目录不会被加入
+     可信集合，因此把同名 `python.exe` 放到 PATH 前面的用户目录里不会获得授权。
 3. `py` 启动器允许紧随一个 `-3` / `-3.x` 版本选择参数，其余参数一律按原样匹配。
 4. 去掉解释器后的 argv **必须与 `approved` 中的某一条完整相等**（严格匹配，不支持前缀/通配）。
 5. `-c` 内联代码永远拒绝；未出现在 `approved` 里的 `-m` 模块单独给出更明确的拒绝原因。
+6. 放行时返回的 `argv[0]` 是**已验证的规范化绝对路径**（其余参数原样保留），
+   调用方必须直接执行该返回值，避免"校验一个路径、执行另一个路径"。
 
 本模块只做纯判定，不启动任何进程；执行入口（P01/P02）必须在使用返回值前再次调用，
 不得直接相信任务 JSON 里的原始命令。
@@ -22,6 +26,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -54,8 +59,33 @@ def config_path(root: Path) -> Path:
     return Path(root).resolve() / "config" / "bridge.json"
 
 
+def _system_root() -> Path | None:
+    """Windows 系统目录（`py.exe` 的固定安装位置）。非 Windows 返回 None。"""
+    if sys.platform != "win32":
+        return None
+    for key in ("SystemRoot", "WINDIR"):
+        value = os.environ.get(key)
+        if not value:
+            continue
+        try:
+            return Path(value).resolve()
+        except (OSError, RuntimeError):
+            return None
+    return None
+
+
 def _trusted_dirs(root: Path, extra: Iterable[Any] = ()) -> frozenset[Path]:
-    """受信任的解释器目录：当前解释器、其 base/prefix、PATH 上可解析的解释器、配置追加项。"""
+    """受信任的解释器目录。
+
+    **不从 PATH 推导**（SS-V01-003-R1）：若把 `shutil.which()` 命中的目录纳入可信集合，
+    用户可写目录一旦排在 PATH 前面，同名 `python.exe` 就会自动取得授权。
+    PATH 只用于**定位**候选文件，是否可信仍由下面这个固定集合决定：
+
+    - 当前解释器所在目录（`sys.executable`）
+    - 解释器安装根（`sys.base_prefix` / `sys.prefix`）
+    - Windows 系统目录（`py.exe` 的固定位置，非普通用户可写）
+    - 配置 `test_command_policy.trusted_interpreter_dirs`（唯一的人工扩展入口）
+    """
     dirs: set[Path] = set()
 
     def add(value: Any) -> None:
@@ -68,10 +98,9 @@ def _trusted_dirs(root: Path, extra: Iterable[Any] = ()) -> frozenset[Path]:
     for base in (getattr(sys, "base_prefix", None), getattr(sys, "prefix", None)):
         if base:
             add(base)
-    for name in ("python", "python3", "py"):
-        found = shutil.which(name)
-        if found:
-            add(Path(found).parent)
+    system_root = _system_root()
+    if system_root is not None:
+        add(system_root)
     for item in extra or ():
         add(item)
     return frozenset(dirs)
@@ -184,11 +213,12 @@ def resolve(root: Path, argv: Any) -> tuple[bool, list[str], str, str]:
             return _reject("test_command 只能包含非空字符串", policy.source, raw_argv)
 
     raw_interpreter = str(argv[0])
-    _resolved, problem = _resolve_interpreter(raw_interpreter, policy)
+    resolved, problem = _resolve_interpreter(raw_interpreter, policy)
     if problem:
         return _reject(problem, policy.source, raw_argv)
 
-    tail = [str(part) for part in argv[1:]]
+    raw_tail = [str(part) for part in argv[1:]]
+    tail = raw_tail
     if _basename(raw_interpreter) in LAUNCHER_NAMES and tail and _LAUNCHER_VERSION.match(tail[0]):
         tail = tail[1:]
 
@@ -207,4 +237,4 @@ def resolve(root: Path, argv: Any) -> tuple[bool, list[str], str, str]:
             f"test_command 未获批准（实际参数: {' '.join(tail) or '<空>'}；"
             f"允许的命令: {wanted}）", policy.source, raw_argv)
 
-    return True, [str(part) for part in argv], "", policy.source
+    return True, [str(resolved), *raw_tail], "", policy.source

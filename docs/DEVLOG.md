@@ -5,7 +5,37 @@
 
 ---
 
-## SS-V01-003 · 测试命令授权加固（本条目）
+## SS-V01-003-R1 · 测试解释器可信路径验证（本条目）
+
+- **提交**：见交付报告
+- **基线**：`dc25135`
+- **原因**：复查 `test_policy` 时怀疑"PATH 参与信任推导 + 执行原始命令名"会让 PATH 劫持生效。
+  **先证实再改**：把临时目录前置到 PATH（目录内放空的 `python.exe`，仅用于路径解析、绝不执行），
+  在 `dc25135` 上实测得到 `resolve() -> True`，且该目录出现在 `trusted_dirs` 中。
+  同一手法对 `py` 启动器同样成立。
+- **根因**：
+  1. `_trusted_dirs()` 把 `shutil.which("python"/"python3"/"py")` 命中的**父目录**加入可信集合
+     → PATH 变成信任来源；
+  2. `resolve()` 放行时返回**原始 argv**，`subprocess.run` 由 OS 再次按 PATH 解析
+     → 校验路径与执行路径可以不同（TOCTOU）。
+- **决策**：
+  1. 受信目录改为固定集合：`sys.executable` 父目录、`base_prefix`/`prefix`、
+     Windows `SystemRoot`（`py.exe` 固定位置）、配置 `trusted_interpreter_dirs`。
+     **不再从 PATH 推导**；`which()` 仅用于定位候选文件。
+  2. `resolve()` 放行时返回 `[验证后的绝对路径, *原始参数]`（保留 `py -3` 的 `-3`）。
+     执行侧（P01 执行块、P02 `run_tests`）本就使用返回值，因此自动改为执行绝对路径。
+  3. 未新增第二套授权机制：仍复用 `trusted_interpreter_dirs`；策略缺失仍一律拒绝。
+- **测试**：新增 `PathHijackTests` 8 项（AC-R1..R5，含 `py` 启动器劫持、执行路径一致性、
+  显式授权目录、原有兼容、拒绝先于 `subprocess.run`）。全量 `323 OK`（2026-10-24 02:48，282.039s）。
+- **兼容性**：`sys.executable`、`py -3 ... discover`、`unittest discover` 全部通过。
+  行为变化：**裸 `python` 只有在受信目录内才通过**；若环境里 PATH 的 python 与 Supervisor
+  解释器不同（例如另一套独立安装），会被拒绝。需要时由人工把该安装目录写进
+  `trusted_interpreter_dirs`。
+- **遗留**：信任粒度仍是"目录"而非文件哈希；`SystemRoot` 被整体信任（普通用户不可写）。
+
+---
+
+## SS-V01-003 · 测试命令授权加固
 
 - **提交**：见交付报告
 - **原因**：`validate_p01_task` 只用 `Path(cmd[0]).name not in RUNNERS **and** not Path(cmd[0]).exists()`
@@ -161,4 +191,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323）来自各阶段报告与提交信息，属**可核实**范围。
