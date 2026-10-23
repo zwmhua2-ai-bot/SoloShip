@@ -79,6 +79,19 @@ class P01BridgeTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="p01test-"))
         self.repo = self.tmp / "repo"
         init_repo(self.repo)
+        # 显式授权测试环境：统一安全门禁要求 WINDOWS_TEST_MODE 必须
+        # enabled + risk_accepted 才放行。这里只为让用例运行在已授权模式下，
+        # 不修改生产配置，也不等于任何形式的自动豁免。
+        (self.tmp / "config").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "config" / "bridge.json").write_text(json.dumps({
+            "windows_test_mode": {
+                "enabled": True, "risk_accepted": True,
+                "approved_projects": ["demo-app"],
+                "approved_repos": ["repo"],
+                "approved_absolute_repos": [],
+                "isolation_claim": "NONE",
+            }
+        }), encoding="utf-8")
         self.bridge = bridge_mod.P01Bridge(self.tmp, codex_cmd=[sys.executable, FAKE_CODEX])
 
     def tearDown(self):

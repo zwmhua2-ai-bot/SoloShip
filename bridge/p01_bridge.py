@@ -306,6 +306,11 @@ class P01Bridge:
             return self.reject(source, "; ".join(errors))
         if source.name != f"{obj['request_id']}.ready.json":
             return self.reject(source, "文件名必须是 <request_id>.ready.json")
+        # 安全门禁：在执行任何 Codex / 测试动作之前强制检查。
+        # 不能只依赖 CLI main() 里的 guard_or_exit —— 内部调用不经过 main()。
+        allowed, gate_message = security.require_auto_dev(self.root)
+        if not allowed:
+            return self.reject(source, gate_message)
 
         try:
             job_id, outcome = self.accept(obj)

@@ -702,6 +702,17 @@ class Supervisor:
             return {"stop": False, "executed": None, "queued": len(candidates)}
 
         cand = batch[0]
+        # 统一安全门禁：P00 文件交接不受限，其余自动开发入口一律先过授权检查。
+        # 必须拦在 claim / execute 之前——若进到 execute 才失败，tick 会把它计入
+        # processed 并把认领标成 done，等于「未授权任务被标记成功」。
+        if cand["kind"] != "p00":
+            allowed, gate_message = security.require_auto_dev(self.root)
+            if not allowed:
+                result = self._defer(cand, f"SECURITY_GATE_BLOCKED: {gate_message}")
+                self.last_result = result
+                self.heartbeat()
+                return {"stop": False, "executed": result}
+
         if cand["kind"] == "p02" and not self.codex_ready:
             result = self._defer(cand, "CODEX_UNAVAILABLE")
             self.last_result = result

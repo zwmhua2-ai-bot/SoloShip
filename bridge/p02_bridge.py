@@ -293,6 +293,19 @@ class P02Bridge:
         }
 
     # --------------------------------------------------------------- main
+    def require_auto_dev(self) -> tuple[bool, str]:
+        """统一安全门禁：每次调用都实时读取配置与沙箱状态。
+
+        不复用 `__init__` 缓存，避免长驻进程（Supervisor）拿到旧配置；
+        同时把 `execution_mode` / `test_mode` 刷新为实时值，保证后续证据与
+        白名单判断用的是同一份状态。
+        """
+        live_mode = security.execution_mode(self.root)
+        if live_mode != self.execution_mode:
+            self.execution_mode = live_mode
+            self.test_mode = security.windows_test_mode(self.root)
+        return security.require_auto_dev(self.root)
+
     def process_one(self, source: Path) -> str:
         if source.is_symlink():
             return self.reject(source, "不接受符号链接")
@@ -308,6 +321,11 @@ class P02Bridge:
             return self.reject(source, "; ".join(errors))
         if source.name != f"{obj['request_id']}.ready.json":
             return self.reject(source, "文件名必须是 <request_id>.ready.json")
+        # 安全门禁：在执行任何 Codex / 测试动作之前强制检查。
+        # 不能只依赖 CLI main() 里的 guard_or_exit —— Supervisor 是同进程直调。
+        allowed, gate_message = self.require_auto_dev()
+        if not allowed:
+            return self.reject(source, gate_message)
         repo_key = self._repo_key(obj["workspace"]["repo"])
         if repo_key not in self.allowed_repos():
             return self.reject(source, f"P02 未授权仓库: {repo_key}")
