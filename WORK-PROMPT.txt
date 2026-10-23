@@ -1,0 +1,9 @@
+我们正在做 SoloShip 的 P00 自动交接测试。请只在我已经授权的本地 exchange 文件夹中操作，不要修改其他文件或调用 Codex。
+
+1. 读取 templates/p00-work-task.json 的 JSON 内容。
+2. 将它写入 inbox/p00_work_trial_01.pending.json。
+3. 写入完成后，将该文件重命名为 inbox/p00_work_trial_01.ready.json。（必须是真实本地文件操作，不是在聊天中显示 JSON，也不能只生成下载附件。）
+4. 如果后台 Bridge 已运行，读取 receipts/demo-app__p00_work_trial_01.receipt.json 和 reports/demo-app__p00_work_trial_01.report.md，报告 job_id、状态和具体证据。
+5. 若本地文件访问、写入或重命名缺乏权限，请明确说明卡在哪一步；不要假称已经提交任务。
+
+注意：这一阶段报告 P00_HANDOFF_OK 只代表交接成功，不代表 Codex 已经开发、测试或生成 PR。

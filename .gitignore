@@ -1,0 +1,26 @@
+# ---- 运行时数据（不入库：可由任务重建 / 含真实任务数据）----
+.control/
+exchange/
+.worktrees/
+demo/
+
+# ---- 编译产物 ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ---- 备份文件、日志 ----
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.log
+
+# ---- 系统/编辑器 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---- 归档包（走 Release 附件，不进 git 历史）----
+*.zip

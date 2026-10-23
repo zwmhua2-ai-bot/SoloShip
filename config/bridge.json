@@ -1,0 +1,106 @@
+{
+  "windows_test_mode": {
+    "enabled": true,
+    "approved_projects": [
+      "demo-app"
+    ],
+    "approved_repos": [
+      "demo/soloship-demo"
+    ],
+    "risk_accepted": true,
+    "risk_statement": "本机为专用测试机，用户明确接受本机自动执行测试代码的风险；路径白名单仅为事后检测，不构成操作系统级隔离。",
+    "approved_at": "2026-10-23T18:05+08:00",
+    "isolation_claim": "NONE",
+    "approved_absolute_repos": [
+      "D:\\SoloShip\\repos\\soloship-demo"
+    ]
+  },
+  "model_router": {
+    "tiers": {
+      "fast": {
+        "model": "gpt-6-luna",
+        "effort": "low"
+      },
+      "balanced": {
+        "model": "gpt-6.1-sol",
+        "effort": "medium"
+      },
+      "deep": {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    },
+    "roles": {
+      "explorer": {
+        "tier": "fast",
+        "effort": "low"
+      },
+      "builder": {
+        "tier": "balanced",
+        "effort": "medium"
+      },
+      "reviewer": {
+        "tier": "balanced",
+        "effort": "high"
+      },
+      "fixer_1": {
+        "tier": "balanced",
+        "effort": "high"
+      },
+      "fixer_2": {
+        "tier": "deep",
+        "effort": "high"
+      }
+    },
+    "high_risk_reviewer": {
+      "tier": "deep",
+      "effort": "high"
+    },
+    "whitelist": [
+      "gpt-6-luna",
+      "gpt-6.1-sol",
+      "gpt-6-astra"
+    ],
+    "supported_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "complexity": {
+      "low_max": 2,
+      "high_min": 6,
+      "delta": {
+        "low": -1,
+        "medium": 0,
+        "high": 1
+      }
+    },
+    "ignore_user_config": false,
+    "ignore_user_config_note": "实测 0.163.0：--ignore-user-config 会把执行环境降为只读（即使 -s workspace-write 且 approval_policy=never），Builder 无法写文件。故不启用；全局 HAC-Flow 冲突改由仓库级 AGENTS.md + 任务提示词压制。"
+  },
+  "github": {
+    "enabled": false,
+    "mode": "live",
+    "remote": "origin",
+    "allowed_repos": [
+      "zwmhua2-ai-bot/soloship-demo"
+    ],
+    "allowed_base_branches": [
+      "main"
+    ],
+    "branch_prefix": "soloship/",
+    "draft": true,
+    "cli": "gh",
+    "timeout_seconds": 180,
+    "note": "阶段 D 待用户提供仓库级 PAT（GH_TOKEN）并明确批准后启用；enabled=false 时不发起任何远端操作",
+    "target_repo": "zwmhua2-ai-bot/soloship-demo",
+    "target_branch": "main",
+    "allow_merge": false,
+    "allow_force_push": false,
+    "require_env_token": true,
+    "token_env": "GH_TOKEN"
+  }
+}

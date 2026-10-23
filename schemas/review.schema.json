@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "candidate_sha", "findings", "summary"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["APPROVED", "CHANGES_REQUESTED"]
+    },
+    "candidate_sha": {
+      "type": "string",
+      "minLength": 7
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "file", "line", "description", "evidence", "suggested_fix"],
+        "properties": {
+          "severity": {"type": "string", "enum": ["BLOCKER", "MAJOR", "MINOR", "INFO"]},
+          "file": {"type": "string"},
+          "line": {"type": "integer", "minimum": 0},
+          "description": {"type": "string", "minLength": 1},
+          "evidence": {"type": "string", "minLength": 1},
+          "suggested_fix": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "summary": {"type": "string", "minLength": 1}
+  }
+}
