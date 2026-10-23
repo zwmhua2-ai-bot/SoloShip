@@ -7,7 +7,8 @@ and picks behaviour from env vars:
   FAKE_CODEX_MODE   legacy P01 modes: edit / nochange / fail / auth / timeout /
                     outside / breaktest
   FAKE_BUILD_MODE   P02 builder: strict / buggy_once / buggy_forever / outside / nochange
-  FAKE_REVIEW_MODE  P02 reviewer: auto / approve / changes / invalid / tamper / stale
+  FAKE_REVIEW_MODE  P02 reviewer: auto / approve / changes / invalid / tamper / stale /
+                    shortsha / suffixsha   （后两个用于 SS-V01-004 的 SHA 严格绑定回归）
 
 Reviewer mode is selected by the prompt itself (contains 独立代码审查员), so the
 same binary can play both roles.
@@ -112,7 +113,8 @@ def do_review(cwd: Path, last: Path | None, thread_id: str) -> int:
     if mode == "invalid":
         text = "{not valid json,,"
     else:
-        approve = mode == "approve" or (mode == "auto" and strict) or (mode == "tamper")
+        approve = (mode in ("approve", "shortsha", "suffixsha", "tamper")
+                   or (mode == "auto" and strict))
         if mode == "changes":
             approve = False
         findings = [] if approve else [{
@@ -123,7 +125,14 @@ def do_review(cwd: Path, last: Path | None, thread_id: str) -> int:
             "evidence": "diff 中 `if not title:` 只判断空字符串，未 strip",
             "suggested_fix": "改为 `if not title.strip(): return False`",
         }]
-        payload_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" if mode == "stale" else sha
+        # SS-V01-004：shortsha / suffixsha 用来证明"自报 PASS 但 SHA 不是完整一致"必须被拒。
+        payload_sha = sha
+        if mode == "stale":
+            payload_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        elif mode == "shortsha":
+            payload_sha = sha[:7]
+        elif mode == "suffixsha":
+            payload_sha = sha + "0"
         text = json.dumps({
             "status": "APPROVED" if approve else "CHANGES_REQUESTED",
             "candidate_sha": payload_sha,

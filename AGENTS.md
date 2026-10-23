@@ -79,7 +79,7 @@ python -m unittest discover -s tests
 ```
 
 - **不要加 `-t .`**：`tests/` 没有 `__init__.py`，会报 `Start directory is not importable`。
-- 基线：`323` 项全绿（2026-10-24 02:48，SS-V01-003-R1 交付时实测）。新增任务不得让既有用例变红。
+- 基线：`346` 项全绿（2026-10-24 03:03，SS-V01-004 交付时实测）。新增任务不得让既有用例变红。
 - 涉及 Codex 的用例一律用 `tests/fake_codex.py`，**不执行真实开发**。
 - 断言要能失败：先证明缺陷存在（测试红），再改到绿。
 
@@ -120,6 +120,7 @@ python -m unittest discover -s tests
 
 - 任务完成后删除 Journal 是**错误**的：应转为 `.control/p02/finalized/<job_id>.json` 作为可重放证据。
 - 报告、回执、验收明细、数据库行都属于证据，不得删除、不得为了"好看"重写。
+- Reviewer 的 `candidate_sha` 必须与 Bridge 的真实 `head_sha` **完整一致**（40 或 64 位十六进制）。前缀、截断、附加字符、其他合法 SHA 一律视为 `REVIEW_INVALID` → `P02_BLOCKED_REVIEW_INVALID`，不得进入 READY。
 - 需要修正历史时，只能**追加**新文件（例如 `.duplicate.json`），不能覆盖原件。
 
 ## 9. 遇到未知来源的工作区修改：立即停止并报告

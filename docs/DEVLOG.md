@@ -5,7 +5,41 @@
 
 ---
 
-## SS-V01-003-R1 · 测试解释器可信路径验证（本条目）
+## SS-V01-004 · Reviewer Candidate SHA 严格绑定（本条目）
+
+- **提交**：见交付报告
+- **基线**：`66cb2ef`
+- **原因**：审查版本校验用的是**双向前缀匹配**——`reviewer.py`（旧）：
+  `len(candidate) >= 7` 且 `head_sha.startswith(candidate) or candidate.startswith(head_sha)`。
+  先写回归测试证明缺陷（新增 23 项，其中 8 项在修复前失败）：
+  - 7 位前缀 → 通过（应拒绝）
+  - 12 位前缀 → 通过（应拒绝）
+  - 完整 SHA 后加 `0` / `-patched` → 通过（应拒绝）
+  - 大写十六进制 → 被拒（不应因大小写变化误判）
+  修复前的端到端表现：`shortsha`/`suffixsha` 模式下 Reviewer 自报 APPROVED 也能一路走到底。
+- **决策**：
+  1. `_check_object_id()`：只接受十六进制、长度 40（SHA-1）或 64（SHA-256）的**完整**对象 ID；
+     **不写死算法**——要求 `len(candidate) == len(head_sha)`，由真实提交决定。
+  2. `candidate.lower() == head_sha.lower()` 才算一致：大小写差异允许（同一对象 ID），
+     前缀、截断、附加字符、另一个合法 SHA、空值、非十六进制一律拒绝。
+  3. `head_sha` 自身非法时也拒绝（Bridge 侧内部错误不得变成"审查通过"）。
+  4. 复用既有失败路径：`REVIEW_INVALID` → `P02_BLOCKED_REVIEW_INVALID`，
+     **未新增状态**、不进修复轮次、不进 READY。
+  5. `schemas/review.schema.json` 同步收紧（`pattern` + `minLength:40` / `maxLength:64`），
+     把"完整 SHA"的信号也传给模型；真正的强制仍在 Python 侧。
+  6. 审查对象绑定沿用既有 `worktree_unchanged()`（HEAD + 工作区），未重复造机制。
+- **测试**：新增 `tests/test_reviewer_sha.py` 23 项（AC-01..AC-09，含 SHA-256 64 位格式用例）；
+  `tests/fake_codex.py` 增加 `shortsha` / `suffixsha` 两种审查模式。全量 `346 OK`
+  （2026-10-24 03:03，298.894s）。
+- **兼容性**：完整正确 SHA 正常通过（`approve` 模式端到端仍到 `P02_READY_FOR_HUMAN`）；
+  Builder / 修复轮次 / 最终化 Journal / Publisher 流程未受影响。
+- **遗留**：Reviewer 仍是模型自报 SHA，Bridge 侧只做一致性校验；若模型幻觉出一个
+  与真实提交长度相同的合法 ID，会被长度+相等性挡下，但无法从语义上证明"它审的就是这段 diff"——
+  这部分依赖 diff 文本本身随 prompt 下发这一事实。
+
+---
+
+## SS-V01-003-R1 · 测试解释器可信路径验证
 
 - **提交**：见交付报告
 - **基线**：`dc25135`
@@ -191,4 +225,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346）来自各阶段报告与提交信息，属**可核实**范围。

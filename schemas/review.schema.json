@@ -10,7 +10,10 @@
     },
     "candidate_sha": {
       "type": "string",
-      "minLength": 7
+      "minLength": 40,
+      "maxLength": 64,
+      "pattern": "^[0-9a-fA-F]+$",
+      "description": "必须与 Bridge 提供的 candidate SHA 完全一致（40=SHA-1 / 64=SHA-256），不接受前缀或截断值"
     },
     "findings": {
       "type": "array",

@@ -8,6 +8,7 @@ schemas/review.schema.json and quote the exact candidate SHA it reviewed.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "review.schema.json"
 SEVERITIES = {"BLOCKER", "MAJOR", "MINOR", "INFO"}
 BLOCKING = {"BLOCKER", "MAJOR"}
+# Git 对象 ID 只可能是 SHA-1(40) 或 SHA-256(64)。这里不写死算法：
+# 实际长度由 Bridge 提供的 head_sha 决定，两者必须一致。
+OBJECT_ID_LENGTHS = (40, 64)
+_OBJECT_ID_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
+def _check_object_id(value: Any, field: str) -> tuple[bool, str]:
+    """完整、合法的 Git 对象 ID：十六进制，长度 40 或 64，不接受前缀/截断/附加字符。"""
+    if not isinstance(value, str) or not value:
+        return False, f"{field} 为空"
+    if not _OBJECT_ID_RE.match(value):
+        return False, f"{field} 含非法字符（只允许十六进制）: {value[:16]!r}"
+    if len(value) not in OBJECT_ID_LENGTHS:
+        return False, (f"{field} 长度非法: {len(value)}"
+                       f"（要求 40=SHA-1 或 64=SHA-256，不接受前缀或截断值）")
+    return True, ""
 
 
 @dataclass
@@ -125,10 +142,20 @@ def _validate_payload(payload: Any, head_sha: str) -> tuple[bool, str]:
     if payload["status"] not in ("APPROVED", "CHANGES_REQUESTED"):
         return False, f"status 非法: {payload['status']}"
     candidate = payload["candidate_sha"]
-    if not isinstance(candidate, str) or len(candidate) < 7:
-        return False, "candidate_sha 无效"
-    if not (head_sha.startswith(candidate) or candidate.startswith(head_sha)):
-        return False, f"审查版本不一致: review={candidate} head={head_sha[:12]}"
+    # 先校验 Bridge 侧的锚点（head_sha），再校验 Reviewer 回报值：
+    # 锚点本身不可信时，属于内部错误，不能被解释成"审查版本不一致"。
+    ok, problem = _check_object_id(head_sha, "head_sha")
+    if not ok:
+        return False, f"Bridge 侧候选版本不可用: {problem}"
+    ok, problem = _check_object_id(candidate, "candidate_sha")
+    if not ok:
+        return False, problem
+    if len(candidate) != len(head_sha):
+        return False, (f"审查版本格式不一致: review 长度 {len(candidate)} != "
+                       f"head 长度 {len(head_sha)}")
+    # 唯一允许的差异是十六进制大小写；值必须完全一致，前缀/后缀一律拒绝。
+    if candidate.lower() != head_sha.lower():
+        return False, f"审查版本不一致: review={candidate[:12]}… head={head_sha[:12]}…"
     if not isinstance(payload["summary"], str) or not payload["summary"].strip():
         return False, "summary 为空"
     findings = payload["findings"]
