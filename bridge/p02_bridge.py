@@ -57,10 +57,28 @@ REPO_NOT_ALLOWED = "P02_REPO_NOT_ALLOWED"
 DUPLICATE = "P02_DUPLICATE"
 REJECTED = "P02_TASK_REJECTED"
 BUSY = "P02_BUSY"
+FINALIZING = "P02_FINALIZING"      # 最终化进行中：DB 可见、证据尚未齐全
+NEEDS_HUMAN = "P02_NEEDS_HUMAN"    # 无法安全恢复：明确交人工，绝不假装成功
+ERROR = "P02_ERROR"                # 未预期的执行异常（与 BUSY 严格区分）
+
+
+class RequestBusy(RuntimeError):
+    """同一 request 的互斥锁冲突。只有它才映射为 P02_BUSY。
+
+    历史上 `process_one` 用 `except RuntimeError` 兜住整个 `_run_job`，
+    于是 git 失败、路由错误等任何 RuntimeError 都被报成 P02_BUSY，日志失真。
+    """
 
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_json_file(path: Path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, UnicodeError):
+        return None
 
 
 class P02Bridge:
@@ -78,9 +96,11 @@ class P02Bridge:
         self.control = self.root / ".control"
         self.state_dir = self.control / "p02"
         self.locks = self.state_dir / "locks"
+        self.finalizing_dir = self.state_dir / "finalizing"
         self.worktrees = self.root / ".worktrees"
         for path in (self.inbox, self.receipts, self.reports, self.artifacts, self.archive,
-                     self.rejected, self.control, self.state_dir, self.locks, self.worktrees):
+                     self.rejected, self.control, self.state_dir, self.locks,
+                     self.finalizing_dir, self.worktrees):
             path.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "p02.db"
         self.codex_cmd = codex_cmd
@@ -197,7 +217,7 @@ class P02Bridge:
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            raise RuntimeError("同一 request 正在处理中") from None
+            raise RequestBusy("同一 request 正在处理中") from None
         try:
             os.write(fd, str(os.getpid()).encode())
             os.close(fd)
@@ -232,18 +252,27 @@ class P02Bridge:
                        (job_id, obj["project_id"], obj["request_id"], spec_sha, "ACCEPTED", utc_now()))
             return job_id, "ACCEPTED"
 
-    def finish(self, job_id: str, **fields: Any) -> None:
+    def finish(self, job_id: str, *, mark_finished: bool = True, **fields: Any) -> None:
+        """更新任务行。`mark_finished=False` 用于 FINALIZING，避免提前写完成时间。"""
         allowed = {"status", "repo", "worktree", "base_commit", "head_commit", "fix_rounds"}
         sets, values = [], []
         for key, value in fields.items():
             if key in allowed:
                 sets.append(f"{key}=?")
                 values.append(value)
-        sets.append("finished_at=?")
-        values.append(utc_now())
+        if mark_finished:
+            sets.append("finished_at=?")
+            values.append(utc_now())
+        if not sets:
+            return
         values.append(job_id)
         with self.connect() as db:
             db.execute(f"UPDATE p02_jobs SET {', '.join(sets)} WHERE job_id=?", values)
+
+    def record_meta(self, job_id: str, **fields: Any) -> None:
+        """只记录 repo/worktree/commit 等元数据，不改状态、不写完成时间。"""
+        self.finish(job_id, mark_finished=False,
+                    **{k: v for k, v in fields.items() if k != "status"})
 
     def record_round(self, job_id: str, round_no: int, kind: str, **fields: Any) -> None:
         payload = {
