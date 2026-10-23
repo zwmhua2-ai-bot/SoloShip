@@ -113,10 +113,11 @@ class P02Bridge:
         self.state_dir = self.control / "p02"
         self.locks = self.state_dir / "locks"
         self.finalizing_dir = self.state_dir / "finalizing"
+        self.finalized_dir = self.state_dir / "finalized"
         self.worktrees = self.root / ".worktrees"
         for path in (self.inbox, self.receipts, self.reports, self.artifacts, self.archive,
                      self.rejected, self.control, self.state_dir, self.locks,
-                     self.finalizing_dir, self.worktrees):
+                     self.finalizing_dir, self.finalized_dir, self.worktrees):
             path.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "p02.db"
         self.codex_cmd = codex_cmd
@@ -435,8 +436,13 @@ class P02Bridge:
         print(f"[{NEEDS_HUMAN}] {job_id}: {reason}", flush=True)
         return {"state": "needs_human", "job_id": job_id, "reason": reason}
 
-    def _recover_one(self, path: Path) -> dict:
-        """重放单条 Journal：补交付物、补归档、推进状态；冲突一律交人工。"""
+    def _recover_one(self, path: Path, *, from_manifest: bool = False) -> dict:
+        """重放单条证据：补交付物、补归档、推进状态；冲突一律交人工。
+
+        from_manifest=True 表示任务已正常完成，证据清单在 finalized/ 下：
+        此时只补缺失文件，不改数据库状态、不移动 inbox 文件、也不删除清单，
+        因此可以反复重放且不会改写历史。
+        """
         fallback_id = path.stem
         journal, problem = self.load_journal(path)
         if problem:
@@ -454,6 +460,9 @@ class P02Bridge:
         row_status = self._job_status(job_id)
         if row_status is None:
             return self._needs_human(job_id, "JOB_ROW_MISSING: 数据库无对应任务行", mark_db=False)
+
+        if from_manifest:
+            return self._repair_from_manifest(job_id, key, artifacts, row_status)
 
         # 1) 交付物：缺失补写；已存在且逐字节一致则保留；冲突绝不覆盖
         paths = self.artifact_paths(key)
@@ -482,6 +491,34 @@ class P02Bridge:
         print(f"[{target_status}] 恢复最终化 {job_id}（原状态 {row_status}）", flush=True)
         return {"state": "recovered", "job_id": job_id, "status": target_status,
                 "from": row_status}
+
+    def _repair_from_manifest(self, job_id: str, key: str, artifacts: dict,
+                              row_status: str | None) -> dict:
+        """已完成任务只补缺失交付物：不改状态、不覆盖冲突、不删除清单。"""
+        if row_status == NEEDS_HUMAN:
+            return {"state": "skipped", "job_id": job_id, "reason": "已标记人工处理"}
+        paths = self.artifact_paths(key)
+        repaired: list[str] = []
+        for name, expected in artifacts.items():
+            target = paths[name]
+            if target.is_file():
+                try:
+                    current = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    return self._needs_human(
+                        job_id, f"ARTIFACT_UNREADABLE: {target.name} ({exc})", mark_db=False)
+                if current != expected:
+                    # 完成后被改写：不覆盖、不改状态，只留人工标记
+                    return self._needs_human(
+                        job_id, f"ARTIFACT_CONFLICT: {target.name}", mark_db=False)
+            else:
+                atomic_text(target, expected)
+                repaired.append(target.name)
+        if not repaired:
+            return {"state": "noop", "job_id": job_id}
+        print(f"[RECOVERED] 依已完成证据补齐 {key}: {', '.join(repaired)}", flush=True)
+        return {"state": "recovered", "job_id": job_id, "from_manifest": True,
+                "status": row_status, "repaired": repaired}
 
     def recover_job(self, job_id: str) -> dict:
         path = self._journal_path(job_id)
@@ -515,17 +552,44 @@ class P02Bridge:
         return found
 
     def recover_finalizing(self) -> dict:
-        """扫描全部 Journal 并与数据库对账。多次调用结果收敛（幂等）。"""
+        """扫描全部证据并与数据库对账。多次调用结果收敛（幂等）。
+
+        两处来源：
+          finalizing/*.json —— 崩溃未收尾，需要补交付物 + 推进状态；
+          finalized/*.json  —— 已完成任务的证据清单，只在文件缺失时补齐。
+        """
         self.finalizing_dir.mkdir(parents=True, exist_ok=True)
-        summary: dict[str, Any] = {"scanned": 0, "recovered": [], "needs_human": []}
+        self.finalized_dir.mkdir(parents=True, exist_ok=True)
+        summary: dict[str, Any] = {"scanned": 0, "recovered": [], "needs_human": [],
+                                   "noop": 0, "manifests": 0}
         pending: set[str] = set()
+
         for path in sorted(self.finalizing_dir.glob("*.json")):
             if path.name.endswith(".needs_human.json"):
                 continue
             pending.add(path.stem)
             summary["scanned"] += 1
             outcome = self._recover_one(path)
-            summary["recovered" if outcome["state"] == "recovered" else "needs_human"].append(outcome)
+            if outcome["state"] == "recovered":
+                summary["recovered"].append(outcome)
+            elif outcome["state"] == "needs_human":
+                summary["needs_human"].append(outcome)
+            else:
+                summary["noop"] += 1
+
+        for path in sorted(self.finalized_dir.glob("*.json")):
+            if path.name.endswith(".needs_human.json"):
+                continue
+            pending.add(path.stem)
+            summary["manifests"] += 1
+            outcome = self._recover_one(path, from_manifest=True)
+            if outcome["state"] == "recovered":
+                summary["recovered"].append(outcome)
+            elif outcome["state"] == "needs_human":
+                summary["needs_human"].append(outcome)
+            else:
+                summary["noop"] += 1
+
         summary["missing_reports"] = self.scan_missing_reports(pending)
         return summary
 
@@ -1055,11 +1119,12 @@ class P02Bridge:
         except Exception as exc:  # noqa: BLE001 - 保留 Journal，交恢复流程
             raise FinalizeError(f"{type(exc).__name__}: {exc}") from exc
 
-        # 6) 收尾：删除 Journal（此后该任务不再需要重放）
+        # 6) 收尾：Journal 转为「已完成证据清单」（SS-V01-002-R1）
+        #    保留而不是删除——完成后报告若丢失，仍能据此逐字节重建，且可反复重放。
         try:
-            journal.unlink(missing_ok=True)
+            journal.replace(self.finalized_dir / journal.name)
         except OSError as exc:
-            print(f"[{ERROR}] 清理 Journal 失败 {journal.name}: {exc}", flush=True)
+            print(f"[{ERROR}] 固化最终化证据失败 {journal.name}: {exc}", flush=True)
 
         # P05-A：实时查询与索引都是旁路，失败不影响任务结论
         self._refresh_realtime(request_id, evidence.get("publish") or {})
