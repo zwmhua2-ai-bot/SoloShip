@@ -72,6 +72,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 - P05-C：未收尾/推迟任务恢复、`cmd_start` 存活二次确认、并行扩展。
 - 收尾业务侧 PR #1（Draft，AC-04 `partially_covered`，`verified=False`）。
 - 补写架构设计说明与数据契约（缺口已登记于 `PROGRESS.md` §7）。
+- v0.2 方向讨论备忘录：`docs/V02_ROADMAP_DRAFT.md`（讨论稿，未获批，不得据此开工）。
 
 ## 5. 最新测试结果与证据来源
 
