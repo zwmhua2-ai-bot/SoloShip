@@ -308,5 +308,88 @@ class PublishFailurePathTests(PublisherFixture):
         self.assertEqual(result.status, gp.FAILED_PUSH)
 
 
+class HeadRepositoryTests(PublisherFixture):
+    """SS-V01-005-R1：PR 来源仓库身份校验。"""
+
+    def test_ac_r2_correct_repo_draft_pr_reused(self):
+        self.write_pr()
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.PR_EXISTS)
+        self.assert_no_remote_branch()
+
+    def test_ac_r1_fork_pr_not_reused(self):
+        self.write_pr(headRepositoryOwner={"login": "someone-else"},
+                      isCrossRepository=True)
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+        self.assertIn("跨", result.detail)
+        self.assert_no_remote_branch()
+
+    def test_ac_r1_same_name_other_owner_not_reused(self):
+        """同名仓库但 Owner 不同（isCrossRepository 也报 False）→ 仍然拒绝。"""
+        self.write_pr(headRepositoryOwner={"login": "someone-else"})
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+        self.assertIn("来源", result.detail)
+        self.assert_no_remote_branch()
+
+    def test_ac_r3_missing_head_repository_rejected(self):
+        self.write_pr()
+        payload = json.loads((self.gh_state / "pr.json").read_text(encoding="utf-8"))
+        del payload["headRepository"]
+        (self.gh_state / "pr.json").write_text(json.dumps(payload), encoding="utf-8")
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+        self.assertIn("不完整", result.detail)
+
+    def test_ac_r3_missing_head_owner_rejected(self):
+        self.write_pr()
+        payload = json.loads((self.gh_state / "pr.json").read_text(encoding="utf-8"))
+        del payload["headRepositoryOwner"]
+        (self.gh_state / "pr.json").write_text(json.dumps(payload), encoding="utf-8")
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+
+    def test_ac_r3_missing_is_cross_repository_rejected(self):
+        self.write_pr()
+        payload = json.loads((self.gh_state / "pr.json").read_text(encoding="utf-8"))
+        del payload["isCrossRepository"]
+        (self.gh_state / "pr.json").write_text(json.dumps(payload), encoding="utf-8")
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+
+    def test_ac_r3_non_object_head_repository_rejected(self):
+        self.write_pr(headRepository="soloship-demo")
+        with self.env():
+            result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+
+    def test_ac_r4_truncated_query_result_rejected(self):
+        """命中数达到查询上限：无法确认'未查到'就是'不存在' → 拒绝。"""
+        base = self.write_pr()
+        original_gh = gp.Publisher._gh
+
+        def capped_gh(self, *args, **kwargs):
+            if args[:2] == ("pr", "list"):
+                items = [dict(base, number=i, url=f"https://github.com/{REPO}/pull/{i}")
+                         for i in range(gp.Publisher.PR_QUERY_LIMIT)]
+                return subprocess.CompletedProcess(args=list(args), returncode=0,
+                                                   stdout=json.dumps(items), stderr="")
+            return original_gh(self, *args, **kwargs)
+
+        with self.env():
+            with mock.patch.object(gp.Publisher, "_gh", capped_gh):
+                result = self.publish()
+        self.assertEqual(result.status, gp.BLOCKED_PR_STATE)
+        self.assertIn("上限", result.detail)
+        self.assert_no_remote_branch()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -113,9 +113,15 @@ def main() -> int:
                          if a == "--head" and i + 1 < len(argv)), "soloship/unknown")
         base_ref = next((argv[i + 1] for i, a in enumerate(argv)
                          if a == "--base" and i + 1 < len(argv)), "main")
-        pr = {"number": 7, "url": "https://github.com/fixture/soloship-demo/pull/7",
+        repo_arg = next((argv[i + 1] for i, a in enumerate(argv)
+                         if a == "--repo" and i + 1 < len(argv)), "fixture/soloship-demo")
+        owner, _, repo_name = repo_arg.partition("/")
+        pr = {"number": 7, "url": f"https://github.com/{repo_arg}/pull/7",
               "state": "OPEN", "isDraft": True, "headRefOid": candidate,
-              "headRefName": head_ref, "baseRefName": base_ref}
+              "headRefName": head_ref, "baseRefName": base_ref,
+              "headRepository": {"name": repo_name},
+              "headRepositoryOwner": {"login": owner},
+              "isCrossRepository": False}
         if STATE is not None:
             STATE.mkdir(parents=True, exist_ok=True)
             (STATE / "pr.json").write_text(json.dumps(pr), encoding="utf-8")

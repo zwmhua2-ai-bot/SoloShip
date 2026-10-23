@@ -114,10 +114,14 @@ class PublisherFixture(unittest.TestCase):
 
     def write_pr(self, **overrides) -> dict:
         """直接在 Fake gh 的状态目录里放一条 PR 记录（模拟远端已有 PR）。"""
+        owner, _, name = REPO.partition("/")
         pr = {
             "number": 7, "url": f"https://github.com/{REPO}/pull/7",
             "state": "OPEN", "isDraft": True, "headRefOid": self.candidate,
             "headRefName": self.branch, "baseRefName": "main",
+            "headRepository": {"name": name},
+            "headRepositoryOwner": {"login": owner},
+            "isCrossRepository": False,
         }
         pr.update(overrides)
         self.gh_state.mkdir(parents=True, exist_ok=True)

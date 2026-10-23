@@ -5,7 +5,36 @@
 
 ---
 
-## SS-V01-005 · GitHub Publisher 发布门禁与幂等性加固（本条目）
+## SS-V01-005-R1 · GitHub PR 来源仓库身份验证（本条目）
+
+- **提交**：见交付报告
+- **基线**：`0fa7f45`
+- **原因**：SS-V01-005 验收补齐——原 `_inspect_pr()` 只校验 Base/Head 分支、状态、Draft 与 Head SHA，
+  **未校验 PR 的来源仓库**。Fork 中同名分支的 PR 只要 `OPEN + Draft + headRefName` 匹配就会被复用，
+  等于把别人的 PR 当成自己已发布的 PR。另有两个相关问题：
+  查询未传 `--limit`，命中数达默认上限时无法区分"没有更多"与"被截断"，
+  于是"未查到"可能被误判成"不存在"。
+- **决策**：
+  1. `PR_REQUIRED_FIELDS` 增加 `headRepository`、`headRepositoryOwner`、`isCrossRepository`，
+     **缺失即"结果不完整"**，拒绝复用。
+  2. 身份规则：`isCrossRepository` 必须为 `False`；
+     `headRepositoryOwner.login` + `headRepository.name` 必须与目标仓库 `owner/name` 完全一致；
+     任一不符 → `BLOCKED_PR_STATE`。SoloShip 只发布本仓库分支，不自动支持跨 Fork。
+  3. 查询显式加 `--limit 100`；命中数**达到上限**即按"可能不完整"拒绝，
+     不把"未查到"当作"不存在"（上限检查先于歧义与存在性判断）。
+  4. 既有 Base/Head 分支、`OPEN`+`Draft`、Head SHA 一致性检查全部保留，顺序未变。
+- **测试**：新增 `HeadRepositoryTests` 8 项（AC-R1..R4）：Fork PR、同名不同 Owner、
+  三类字段缺失、非对象字段、达上限截断；AC-R2/R5 由既有用例覆盖并扩展。
+  修复前 6 项 FAIL / 1 项 ERROR（`PR_QUERY_LIMIT` 不存在）。全量 `382 OK`
+  （2026-10-24 04:05，446.311s）。
+- **兼容性**：同仓库 Draft PR 流程不变（`fake_gh` 的 `pr create` 现在按 `--repo` 记录来源字段，
+  既有 P03 用例无需改动即通过）。行为变化：来源身份不明确或跨 Fork 时拒绝复用并交人工。
+- **遗留**：身份判定依赖 gh 返回的 `headRepositoryOwner`/`headRepository` 字段；
+  若 gh 版本不返回这些字段，所有 PR 都会被判"不完整"而拒绝（fail closed，需人工核对）。
+
+---
+
+## SS-V01-005 · GitHub Publisher 发布门禁与幂等性加固
 
 - **提交**：见交付报告
 - **基线**：`0db54fc`
@@ -265,4 +294,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382）来自各阶段报告与提交信息，属**可核实**范围。

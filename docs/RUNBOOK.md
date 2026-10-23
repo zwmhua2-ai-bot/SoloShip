@@ -99,7 +99,7 @@ $PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 374 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 382 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
@@ -148,6 +148,7 @@ git -C $REPO diff --stat
 | `PUBLISH_BLOCKED_REMOTE`（详情含"无法可靠读取远端 base"） | `ls-remote` 失败、目标分支不存在或返回值不是合法对象 ID | SS-V01-005：读不到 base 一律拒绝。确认远端可达、分支存在后重试；不要为跑通而跳过该校验 |
 | `PUBLISH_BLOCKED_PR_STATE` | 已有 PR 不是 OPEN Draft、分支不符、查询失败/结果不完整/有歧义 | 交人工：核对 `.control/p03/publish/<job_id>.json` 与远端 PR 状态，不要自动重开或另建 PR |
 | `PUBLISH_BLOCKED_BASE_MOVED` | 远端 base 与预期不一致，或发布过程中发生变化 | 重新评估候选是否仍可干净合入；必要时重跑任务 |
+| `PUBLISH_BLOCKED_PR_STATE`（详情含"跨 Fork"/"来源仓库不符"/"来源.*字段缺失"/"达到上限"） | PR 来自其他仓库、来源身份字段缺失，或查询命中数达到 `--limit` 上限 | SS-V01-005-R1：不把其他 Fork 的同名分支 PR 当作自己的 PR；核对远端 PR 归属后由人工处理，不要放宽身份校验 |
 | `PermissionError [WinError 5] ... state.json` | 读写与原子替换撞车 | 已由 `_write_json` 退避重试处理；若仍出现，检查是否有外部工具锁文件 |
 | 日志中文乱码 | 历史 GBK 段落 | `supervisor-boot.log` 前若干字节是旧记录，新写入均为 UTF-8；不要就地重写历史 |
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |

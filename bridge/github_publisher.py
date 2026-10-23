@@ -205,19 +205,25 @@ class Publisher:
         return ""
 
     # ------------------------------------------------------- existing PR
+    # SS-V01-005-R1：来源仓库身份也纳入必填字段——缺失即"结果不完整"，不得复用。
     PR_REQUIRED_FIELDS = ("number", "url", "state", "isDraft",
-                          "headRefOid", "headRefName", "baseRefName")
+                          "headRefOid", "headRefName", "baseRefName",
+                          "headRepository", "headRepositoryOwner", "isCrossRepository")
+    # 查询上限：命中数达到该值时无法排除"还有更多匹配"，按不完整处理。
+    PR_QUERY_LIMIT = 100
 
     def _inspect_pr(self, repo: str, branch: str, base_branch: str,
                     candidate_sha: str) -> tuple[dict | None, str, str]:
         """严格查询是否已有可复用的 PR。
 
         返回 (pr, 拒绝状态, 拒绝原因)。查询失败、结果不完整、结果有歧义、
-        状态不是 OPEN Draft、Base/Head 分支不符、Head SHA 与 candidate 不一致，
-        都返回拒绝状态——调用方不得在不确定时执行任何写操作。
+        状态不是 OPEN Draft、Base/Head 分支不符、来源仓库不是目标仓库、
+        Head SHA 与 candidate 不一致，都返回拒绝状态——调用方不得在不确定时
+        执行任何写操作。
         """
         try:
             proc = self._gh("pr", "list", "--repo", repo, "--head", branch, "--state", "all",
+                            "--limit", str(self.PR_QUERY_LIMIT),
                             "--json", ",".join(self.PR_REQUIRED_FIELDS))
         except (OSError, subprocess.SubprocessError) as exc:
             return None, BLOCKED_PR_STATE, f"PR 查询失败: {type(exc).__name__}"
@@ -231,6 +237,11 @@ class Publisher:
             return None, BLOCKED_PR_STATE, "PR 查询结果不是数组"
         if any(not isinstance(item, dict) for item in items):
             return None, BLOCKED_PR_STATE, "PR 查询结果含非对象条目"
+        if len(items) >= self.PR_QUERY_LIMIT:
+            # 达到上限：可能还有未返回的匹配，"没查到"不能当成"不存在"
+            return None, BLOCKED_PR_STATE, (
+                f"PR 查询结果达到上限 {self.PR_QUERY_LIMIT}，可能不完整；"
+                "无法确认'未查到'即'不存在'，交人工")
         if not items:
             return None, "", ""
         for item in items:
@@ -254,6 +265,23 @@ class Publisher:
             return None, BLOCKED_PR_STATE, f"PR 状态无法处理: {state}"
         if not pr["isDraft"]:
             return None, BLOCKED_PR_STATE, "PR 不是 Draft：拒绝自动复用，交人工"
+
+        # SS-V01-005-R1：来源仓库身份。SoloShip 只发布本仓库分支，
+        # 不自动支持跨 Fork；身份缺失或不明确一律拒绝复用。
+        head_repo = pr.get("headRepository")
+        head_owner = pr.get("headRepositoryOwner")
+        if not isinstance(head_repo, dict) or not head_repo.get("name"):
+            return None, BLOCKED_PR_STATE, "PR 来源仓库字段缺失或非法，身份不明确"
+        if not isinstance(head_owner, dict) or not head_owner.get("login"):
+            return None, BLOCKED_PR_STATE, "PR 来源 Owner 字段缺失或非法，身份不明确"
+        if pr.get("isCrossRepository") is not False:
+            return None, BLOCKED_PR_STATE, "PR 来自其他仓库（跨 Fork）：不自动复用，交人工"
+        expected_owner, _, expected_name = repo.partition("/")
+        if head_owner["login"] != expected_owner or head_repo["name"] != expected_name:
+            return None, BLOCKED_PR_STATE, (
+                f"PR 来源仓库不符: {head_owner['login']}/{head_repo['name']}"
+                f"（期望 {repo}），不得复用")
+
         if not valid_object_id(pr["headRefOid"]):
             return None, BLOCKED_PR_STATE, f"PR Head SHA 非法: {pr['headRefOid']!r}"
         if str(pr["headRefOid"]).lower() != str(candidate_sha).lower():
