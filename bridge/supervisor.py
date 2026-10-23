@@ -24,6 +24,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -102,6 +103,64 @@ def queue_path(root: Path) -> Path:
 
 def recovery_path(root: Path) -> Path:
     return control_dir(root) / "recovery_pending.json"
+
+
+def needs_human_dir(root: Path) -> Path:
+    return control_dir(root) / "needs_human"
+
+
+def recovery_lock_path(root: Path) -> Path:
+    return control_dir(root) / "recovery.lock"
+
+
+def recovery_summary_path(root: Path) -> Path:
+    return control_dir(root) / "recovery_summary.json"
+
+
+# 启动确认：心跳超过该年龄即视为未真正工作（不得谎报 RUNNING）
+HEARTBEAT_FRESH_S = 30.0
+
+
+def startup_ready(root: Path, pid: int | None = None) -> tuple[bool, str]:
+    """启动成功 ≠ 进程真的在运行：单实例锁、PID、心跳必须同时满足。"""
+    status = build_status(root)
+    if not status["running"] or not status["lock_held"]:
+        return False, "单实例锁未被持有（可能启动即退出）"
+    holder = status.get("pid")
+    if not pid_alive(holder):
+        return False, f"state.json 记录的 pid={holder} 不存活"
+    if pid is not None and holder != pid:
+        return False, f"pid 不符: 期望 {pid}，实际 {holder}"
+    age = status.get("heartbeat_age_s")
+    if age is None:
+        return False, "没有心跳记录"
+    if age > HEARTBEAT_FRESH_S:
+        return False, f"心跳过期（{age}s 前）"
+    return True, ""
+
+
+def _p02_terminal_statuses() -> set[str]:
+    """P02 终态集合（惰性导入，避免循环依赖）。"""
+    try:
+        import p02_bridge
+    except ImportError:  # pragma: no cover - 仅在 bridge 目录缺失时发生
+        return set()
+    return set(p02_bridge.TERMINAL_STATUSES)
+
+
+def _recovery_view(root: Path) -> dict:
+    """状态查询用的恢复摘要（只读）。"""
+    pending = 0
+    directory = needs_human_dir(root)
+    if directory.is_dir():
+        pending = len(list(directory.glob("*.json")))
+    data = _read_json(recovery_summary_path(root), None) or {}
+    return {
+        "counts": data.get("counts") or {},
+        "needs_human": pending,
+        "items": len(data.get("items") or []),
+        "updated_at": data.get("finished_at") or data.get("started_at"),
+    }
 
 
 def stop_path(root: Path) -> Path:
@@ -634,30 +693,54 @@ class Supervisor:
         return claims_dir(self.root) / f"{cand['kind']}__{cand['task_id']}.json"
 
     def claim(self, cand: dict) -> tuple[str, str]:
-        """返回 (状态, 说明)。状态：acquired / busy / interrupted。"""
+        """返回 (状态, 说明)。
+
+        状态：acquired / busy / interrupted / duplicate / needs_human。
+        `requeued` 表示恢复流程已判定该任务可安全重跑，允许重新认领（历史留在
+        claim 文件的 `history` 里，不丢证据）；`needs_human` 表示已标记人工处理，
+        拒绝自动执行。
+        """
         path = self._claim_path(cand)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({"kind": cand["kind"], "task_id": cand["task_id"],
                               "pid": os.getpid(), "at": utc_now(), "state": "running"},
                              ensure_ascii=False)
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            existing = _read_json(path, {}) or {}
-            holder = existing.get("pid")
-            state = existing.get("state")
-            if holder == os.getpid() and state == "running":
-                return "busy", "本进程已持有该任务认领"
-            if state == "running" and pid_alive(holder):
-                return "busy", f"已被 pid={holder} 认领"
-            if state == "running":
-                return "interrupted", f"上次认领未收尾（pid={holder}），按 P05-C 策略不重跑"
-            return "duplicate", f"任务已处理过（state={state}），不重复执行"
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        return "acquired", ""
+        inherited_history: list | None = None
+        for attempt in (0, 1):
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                existing = _read_json(path, {}) or {}
+                holder = existing.get("pid")
+                state = existing.get("state")
+                if state == "needs_human":
+                    return "needs_human", ("任务已标记需人工处理"
+                                           "（.control/supervisor/needs_human/），不自动执行")
+                if state == "requeued" and attempt == 0:
+                    # 恢复流程判定可安全重跑：重置认领但保留历史证据
+                    inherited_history = existing.get("history") or []
+                    try:
+                        os.unlink(str(path))
+                    except OSError as exc:
+                        return "busy", f"无法重置已重排队的认领: {exc}"
+                    continue
+                if holder == os.getpid() and state == "running":
+                    return "busy", "本进程已持有该任务认领"
+                if state == "running" and pid_alive(holder):
+                    return "busy", f"已被 pid={holder} 认领"
+                if state == "running":
+                    return "interrupted", f"上次认领未收尾（pid={holder}），按 P05-C 策略不重跑"
+                return "duplicate", f"任务已处理过（state={state}），不重复执行"
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                data = json.loads(payload)
+                if inherited_history:
+                    # 重排队后的再次认领：把上一轮历史写回去，不丢证据
+                    data["history"] = inherited_history
+                fh.write(json.dumps(data, ensure_ascii=False))
+                fh.flush()
+                os.fsync(fh.fileno())
+            return "acquired", ""
+        return "busy", "认领重置后仍被其他进程占用"
 
     def close_claim(self, cand: dict, outcome: str, detail: str = "") -> None:
         path = self._claim_path(cand)
@@ -668,6 +751,275 @@ class Supervisor:
             _write_json(path, existing)
         except OSError as exc:  # 认领文件写不动不影响任务结论
             self.log.warning("写入认领结果失败: %s", exc)
+
+    # ------------------------------------------------------- P05-C recovery
+    def _p02_job_row(self, request_id: str) -> tuple[str, str, str] | None:
+        """只读查询 P02 任务行；库不存在或读不动时返回 None（按"无记录"处理）。"""
+        import sqlite3
+
+        db = self.root / ".control" / "p02" / "p02.db"
+        if not db.is_file():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+            try:
+                row = conn.execute(
+                    "SELECT job_id, project_id, status FROM p02_jobs WHERE request_id=?",
+                    (request_id,)).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        return (row[0], row[1], row[2]) if row else None
+
+    def _worktree_state(self, task_id: str) -> tuple[bool, str]:
+        path = self.root / ".worktrees" / task_id
+        if not path.exists():
+            return False, "不存在"
+        try:
+            proc = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"{type(exc).__name__}"
+        return proc.returncode == 0, (proc.stdout.strip() or proc.stderr.strip()[:80])
+
+    def _publish_stage(self, job_id: str) -> str | None:
+        """发布结果是否可对账；不可对账时返回 'status@stage'。"""
+        path = self.root / ".control" / "p03" / "publish" / f"{job_id}.json"
+        if not path.is_file():
+            return None
+        data = _read_json(path, {}) or {}
+        status = str(data.get("status") or "")
+        stage = str(data.get("stage") or "")
+        if status in ("PUBLISH_PR_CREATED", "PUBLISH_PR_EXISTS", "PUBLISH_RECOVERED",
+                      "PUBLISH_SKIPPED_DISABLED", "PUBLISH_ABORTED"):
+            return None  # 已对账完成或明确未发布
+        return f"{status or 'UNKNOWN'}@{stage or 'unknown'}"
+
+    def classify_interrupted(self, cand: dict) -> dict:
+        """按证据把中断任务分为 ACTIVE / SAFE_TO_RESUME / NEEDS_HUMAN。
+
+        判定顺序即"证据越弱越保守"：先看持有者是否存活，再看 P02 是否有可重放的
+        持久证据，最后才考虑"没有任何副作用"。任何无法确认副作用的情况都归
+        NEEDS_HUMAN——宁可停止，不重复执行有副作用的开发操作。
+        """
+        claim_path = self._claim_path(cand)
+        claim = _read_json(claim_path, {}) or {}
+        holder = claim.get("pid")
+        evidence = {"claim": str(claim_path), "holder_pid": holder,
+                    "claim_state": claim.get("state")}
+        verdict = {"kind": cand["kind"], "task_id": cand["task_id"], "evidence": evidence}
+
+        if claim.get("state") == "running" and pid_alive(holder):
+            verdict.update({"category": "ACTIVE",
+                            "reason": f"认领持有者 pid={holder} 仍存活，不接管、不重复认领"})
+            return verdict
+        if cand["kind"] == "p00":
+            verdict.update({"category": "SAFE_TO_RESUME",
+                            "reason": "P00 只做文件交接，无 Codex/远端副作用，可安全重新入队"})
+            return verdict
+
+        job = self._p02_job_row(cand["task_id"])
+        worktree_ok, worktree_detail = self._worktree_state(cand["task_id"])
+        worktree_dir = self.root / ".worktrees" / cand["task_id"]
+
+        if job is None:
+            if worktree_dir.exists():
+                verdict.update({"category": "NEEDS_HUMAN",
+                                "reason": "任务未入库但存在 worktree 目录，无法确认是否已产生副作用"})
+                return verdict
+            verdict.update({"category": "SAFE_TO_RESUME",
+                            "reason": "尚无入库记录与 worktree，未产生任何执行副作用"})
+            return verdict
+
+        job_id, project_id, status = job
+        evidence.update({"job_id": job_id, "job_status": status})
+        state_dir = self.root / ".control" / "p02"
+        if (state_dir / "finalizing" / f"{job_id}.json").is_file():
+            verdict.update({"category": "SAFE_TO_RESUME",
+                            "reason": "最终化 Journal 完整，可重放交付物与状态（不重复调用 Codex）"})
+            return verdict
+        if (state_dir / "finalized" / f"{job_id}.json").is_file():
+            verdict.update({"category": "SAFE_TO_RESUME",
+                            "reason": "已完成证据清单完整，缺失报告可按清单逐字节恢复"})
+            return verdict
+
+        publish = self._publish_stage(job_id)
+        if publish:
+            evidence["publish"] = publish
+            verdict.update({"category": "NEEDS_HUMAN",
+                            "reason": f"发布结果不可对账（{publish}），停止并保留证据"})
+            return verdict
+
+        report = (self.root / "exchange" / "p02" / "reports"
+                  / f"{project_id}__{cand['task_id']}.report.md")
+        if status in _p02_terminal_statuses():
+            if report.is_file():
+                verdict.update({"category": "SAFE_TO_RESUME",
+                                "reason": f"任务已是终态 {status}，重新入队后由 P02 幂等处理"})
+            else:
+                verdict.update({"category": "NEEDS_HUMAN",
+                                "reason": f"任务已是终态 {status} 但报告缺失且无证据清单"})
+            return verdict
+        if not worktree_dir.exists():
+            verdict.update({"category": "NEEDS_HUMAN",
+                            "reason": "Builder 可能已执行但缺少 Journal 等完整证据，不重跑 Codex"})
+            return verdict
+        if not worktree_ok:
+            evidence["worktree"] = worktree_detail
+            verdict.update({"category": "NEEDS_HUMAN",
+                            "reason": f"worktree 状态不一致（{worktree_detail}），不盲目复用或删除"})
+            return verdict
+        verdict.update({"category": "NEEDS_HUMAN",
+                        "reason": "Builder 可能已执行但缺少 Journal 等完整证据，不重跑 Codex"})
+        return verdict
+
+    def _mark_claim(self, kind: str, task_id: str, state: str, reason: str,
+                    category: str) -> None:
+        path = claims_dir(self.root) / f"{kind}__{task_id}.json"
+        data = _read_json(path, {}) or {}
+        history = data.get("history") or []
+        history.append({"state": data.get("state"), "pid": data.get("pid"),
+                        "at": data.get("at"), "closed_at": utc_now(),
+                        "category": category, "reason": reason})
+        data.update({"state": state, "history": history, "updated_at": utc_now(),
+                     "recovery_reason": reason})
+        try:
+            _write_json(path, data)
+        except OSError as exc:
+            self.log.warning("更新认领状态失败 %s: %s", path.name, exc)
+
+    def _write_needs_human(self, kind: str, task_id: str, verdict: dict) -> Path:
+        target = needs_human_dir(self.root) / f"{kind}__{task_id}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"schema": SCHEMA, "kind": kind, "task_id": task_id,
+                   "job_id": verdict["evidence"].get("job_id"),
+                   "category": verdict["category"], "reason": verdict["reason"],
+                   "evidence": verdict["evidence"], "at": utc_now(),
+                   "note": "需人工处理：未自动重跑、未删除证据、未标记成功"}
+        _write_json(target, payload)
+        return target
+
+    def _requeue_task(self, kind: str, task_id: str) -> bool:
+        """把停放中的任务文件放回对应 inbox；返回是否放回了文件。"""
+        name = f"{task_id}.ready.json"
+        subdir = "inbox" if kind == "p00" else "p02/inbox"
+        inbox = self.root / "exchange" / subdir
+        parked = deferred_dir(self.root) / f"{kind}__{name}"
+        if parked.is_file():
+            inbox.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(parked), str(inbox / name))
+            return True
+        return (inbox / name).is_file()
+
+    def _acquire_recovery_lock(self) -> bool:
+        """恢复互斥：O_EXCL 抢占，持锁进程已失联才接管。"""
+        path = recovery_lock_path(self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"pid": os.getpid(), "at": utc_now()}, ensure_ascii=False)
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            existing = _read_json(path, {}) or {}
+            holder = existing.get("pid")
+            if holder == os.getpid():
+                return True
+            if pid_alive(holder):
+                return False
+            try:
+                os.unlink(str(path))
+            except OSError:
+                return False
+            try:
+                fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                return False
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return True
+
+    def _release_recovery_lock(self) -> None:
+        path = recovery_lock_path(self.root)
+        data = _read_json(path, {}) or {}
+        if data.get("pid") == os.getpid():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def recover_on_start(self) -> dict:
+        """P05-C：启动时按证据恢复。持 recovery.lock；不重跑、不删证据。"""
+        summary = {"schema": SCHEMA, "started_at": utc_now(), "lock": "acquired",
+                   "items": [], "deferred_parked": [], "counts": {}, "finalizing_replay": {}}
+        if not self._acquire_recovery_lock():
+            summary["lock"] = "busy"
+            summary["note"] = "另一个恢复进程持有 recovery.lock，本次跳过（不重复恢复）"
+            self.log.warning("恢复互斥：已有其他恢复进程在运行，本次跳过")
+            return summary
+        try:
+            try:
+                summary["finalizing_replay"] = self.recover_p02_finalizing()
+            except Exception as exc:  # noqa: BLE001 - 重放失败不得阻断启动
+                summary["finalizing_replay"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+            for claim_path in sorted(claims_dir(self.root).glob("*.json")):
+                claim = _read_json(claim_path, {}) or {}
+                if claim.get("state") != "running":
+                    continue
+                holder = claim.get("pid")
+                kind, task_id = claim.get("kind"), claim.get("task_id")
+                if not kind or not task_id:
+                    continue
+                if pid_alive(holder):
+                    summary["items"].append({
+                        "kind": kind, "task_id": task_id, "category": "ACTIVE",
+                        "action": "skipped", "reason": f"持有者 pid={holder} 存活，不接管",
+                        "at": utc_now()})
+                    continue
+                cand = {"kind": kind, "task_id": task_id, "path": "", "mtime": 0}
+                verdict = self.classify_interrupted(cand)
+                item = {"kind": kind, "task_id": task_id, "category": verdict["category"],
+                        "reason": verdict["reason"], "evidence": verdict["evidence"],
+                        "at": utc_now()}
+                if verdict["category"] == "SAFE_TO_RESUME":
+                    requeued = self._requeue_task(kind, task_id)
+                    self._mark_claim(kind, task_id, "requeued", verdict["reason"],
+                                     verdict["category"])
+                    item["action"] = "requeued" if requeued else "requeued_no_file"
+                    self.log.info("恢复：%s/%s 判定可安全重跑，已重新入队", kind, task_id)
+                elif verdict["category"] == "NEEDS_HUMAN":
+                    self._write_needs_human(kind, task_id, verdict)
+                    self._mark_claim(kind, task_id, "needs_human", verdict["reason"],
+                                     verdict["category"])
+                    item["action"] = "needs_human"
+                    self.log.warning("恢复：%s/%s 证据不足，转人工（%s）", kind, task_id,
+                                     verdict["reason"])
+                else:
+                    item["action"] = "skipped"
+                summary["items"].append(item)
+
+            for path in sorted(deferred_dir(self.root).glob("*.json")):
+                name = path.name
+                kind, _, rest = name.partition("__")
+                task_id = rest[:-len(".ready.json")] if rest.endswith(".ready.json") else rest
+                summary["deferred_parked"].append({
+                    "kind": kind, "task_id": task_id, "category": "DEFERRED",
+                    "reason": "保持停放：不因重启自动放行或重新入队", "path": str(path)})
+
+            counts: dict[str, int] = {}
+            for item in summary["items"]:
+                counts[item["category"]] = counts.get(item["category"], 0) + 1
+            counts["DEFERRED"] = len(summary["deferred_parked"])
+            summary["counts"] = counts
+            summary["finished_at"] = utc_now()
+            _write_json(recovery_summary_path(self.root), summary)
+            self.recovery_report = summary
+        finally:
+            self._release_recovery_lock()
+        return summary
 
     # ------------------------------------------------------------ execution
     def _defer(self, cand: dict, reason: str) -> dict:
@@ -748,6 +1100,12 @@ class Supervisor:
         claim_state, detail = self.claim(cand)
         if claim_state == "interrupted":
             result = self._defer(cand, f"UNFINISHED_CLAIM: {detail}")
+            self.last_result = result
+            self.heartbeat()
+            return {"stop": False, "executed": result}
+        if claim_state == "needs_human":
+            # P05-C：已标记人工处理的任务，绝不自动执行
+            result = self._defer(cand, f"NEEDS_HUMAN: {detail}")
             self.last_result = result
             self.heartbeat()
             return {"stop": False, "executed": result}
@@ -846,6 +1204,7 @@ def build_status(root: Path) -> dict:
         "queue": (data.get("queue") or {"p00": 0, "p02": 0}),
         "stop_requested": stop_path(root).is_file(),
         "recovery_pending": len((_read_json(recovery_path(root), {}) or {}).get("items") or []),
+        "recovery": _recovery_view(root),
         "paths": {
             "state": str(state_path(root)),
             "logs": str(logs_dir(root)),
@@ -875,18 +1234,20 @@ def _spawn_background(root: Path, poll_interval: float, codex_cmd: list[str] | N
 
 
 def _wait_ready(root: Path, pid: int, timeout_s: float = 20.0) -> dict:
+    """等待后台进程真正进入工作状态：锁、PID、心跳都要核，不能只看 state.json。"""
     deadline = time.time() + timeout_s
+    reason = ""
     while time.time() < deadline:
-        data = _read_json(state_path(root), {}) or {}
-        if data.get("pid") == pid and data.get("state") == "running":
-            return {"ready": True, "state": data}
-        if data.get("pid") == pid and data.get("state") == "stopped":
-            return {"ready": False, "state": data}
+        ok, why = startup_ready(root, pid)
+        if ok:
+            return {"ready": True, "state": _read_json(state_path(root), {}) or {}}
+        reason = why
         if not pid_alive(pid):
-            return {"ready": False, "state": data, "reason": "进程已退出"}
+            return {"ready": False, "state": _read_json(state_path(root), {}) or {},
+                    "reason": "进程已退出"}
         time.sleep(0.2)
     return {"ready": False, "state": _read_json(state_path(root), {}) or {},
-            "reason": f"等待 {timeout_s}s 仍未就绪"}
+            "reason": f"等待 {timeout_s}s 仍未就绪: {reason}"}
 
 
 def cmd_start(args) -> int:
@@ -908,8 +1269,10 @@ def cmd_start(args) -> int:
             sup = Supervisor(root, codex_cmd=args.codex_cmd, poll_interval=args.poll,
                              preflight_info=preflight(root, args.codex_cmd))
             sup.detect_unfinished()
+            sup.recover_on_start()
             print(json.dumps({"ok": True, "mode": "foreground", "pid": os.getpid(),
                               "codex_ready": sup.codex_ready,
+                              "recovery": sup.recovery_report,
                               "preflight": sup.preflight_info}, ensure_ascii=False, indent=2))
             return sup.run(max_cycles=args.max_cycles)
         finally:
@@ -1025,6 +1388,7 @@ def cmd_run(args) -> int:
     try:
         sup = Supervisor(root, codex_cmd=args.codex_cmd, poll_interval=args.poll)
         sup.detect_unfinished()
+        sup.recover_on_start()
         return sup.run(max_cycles=args.max_cycles)
     finally:
         lock.release()
@@ -1045,8 +1409,16 @@ def cmd_hold_lock(args) -> int:
 
 
 def cmd_recovery(args) -> int:
-    data = _read_json(recovery_path(Path(args.root)), None)
-    print(json.dumps(data or {"items": [], "note": "没有待恢复任务记录"},
+    """只读查看：待恢复清单 + P05-C 恢复摘要 + 需人工处理明细。不修改任何状态。"""
+    root = Path(args.root).resolve()
+    pending = _read_json(recovery_path(root), None) or {"items": [], "note": "没有待恢复任务记录"}
+    summary = _read_json(recovery_summary_path(root), None) or {"note": "尚未执行过启动恢复"}
+    human = []
+    directory = needs_human_dir(root)
+    if directory.is_dir():
+        for path in sorted(directory.glob("*.json")):
+            human.append(_read_json(path, {}) or {})
+    print(json.dumps({"pending": pending, "recovery": summary, "needs_human": human},
                      ensure_ascii=False, indent=2))
     return EXIT_OK
 

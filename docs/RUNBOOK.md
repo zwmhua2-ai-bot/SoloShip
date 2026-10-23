@@ -99,14 +99,47 @@ $PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 382 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 402 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
 - **不要加 `-t .`**：`tests/` 无 `__init__.py`，会报 `Start directory is not importable`。
 - 涉及 Codex 的用例使用 `tests/fake_codex.py`，不会调用真实 Codex。
 
-## 5. P02 恢复
+## 5. P05-C：Supervisor 中断恢复（SS-V01-006）
+
+恢复由 Supervisor 启动路径自动执行（`start --foreground` 与后台 `_run` 都会在
+`detect_unfinished()` 之后调用 `recover_on_start()`），也可手动只读查看。
+
+```powershell
+# 只读查看：待恢复清单 + 恢复摘要 + 需人工处理明细（不修改任何状态）
+$PY bridge\supervisor.py recovery --root $REPO
+
+# 启动即恢复（前台，便于观察）
+$PY bridge\supervisor.py start --foreground --max-cycles 1 --root $REPO
+```
+
+分级规则（证据越弱越保守，**宁可停止**）：
+
+| 分类 | 判定 | 动作 |
+| --- | --- | --- |
+| ACTIVE | 认领持有者进程仍存活 | 不接管、不重复认领 |
+| SAFE_TO_RESUME | P00 文件交接；或未入库且无 worktree；或 `finalizing/` Journal 完整；或 `finalized/` 清单完整；或终态且报告在位 | 认领转 `requeued`、任务文件回 inbox 由 P02 幂等处理；历史认领留在 `history` |
+| NEEDS_HUMAN | 未入库但有 worktree；有 job 无 Journal；发布结果不可对账；终态但报告缺失；worktree 状态不一致 | 写 `.control/supervisor/needs_human/<kind>__<task>.json`，认领转 `needs_human`，**拒绝自动执行** |
+| DEFERRED | 安全门禁 / Codex 不可用等停放任务 | 保持停放，不因重启自动放行或重新入队 |
+
+互斥与就绪确认：
+
+- 恢复持 `.control/supervisor/recovery.lock`（O_EXCL）；持锁进程失联才接管，
+  两个恢复进程不会同时处理同一任务。
+- 启动就绪 = 单实例锁被持有 + PID 存活 + 心跳 ≤ 30s；不满足则 `start` 明确失败，
+  不显示虚假的 RUNNING。
+- `status` 输出新增 `recovery` 摘要（分类计数、`needs_human` 数量、更新时间）。
+
+**没有**“标记成功 / 强制放行”命令。人工处理完 `needs_human/` 下的条目后，需自行决定
+后续动作并留下记录；不得伪造成功状态。
+
+## 6. P02 恢复
 
 ```powershell
 $PY bridge\p02_bridge.py --root $REPO --recover
@@ -119,7 +152,7 @@ $PY bridge\p02_bridge.py --root $REPO --recover
   `.control/p02/finalizing/<job_id>.needs_human.json` 留痕，**不会**覆盖已有文件。
 - 幂等：重复执行结果收敛。
 
-## 6. Git 状态检查
+## 7. Git 状态检查
 
 ```powershell
 git -C $REPO rev-parse HEAD
@@ -131,7 +164,7 @@ git -C $REPO diff --stat
 
 提交前必看 `git status --short` 与 `git diff --stat`，确认改动范围与任务卡一致。
 
-## 7. 常见故障
+## 8. 常见故障
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
@@ -154,7 +187,7 @@ git -C $REPO diff --stat
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |
 | 计划任务 `LastTaskResult=0` 但没进程 | 曾出现过启动即退 | 以 `status` + 进程数为准，查 `logs/supervisor-boot.log` |
 
-## 8. 备份与恢复
+## 9. 备份与恢复
 
 **备份**
 
@@ -177,7 +210,7 @@ $PY -c "import sqlite3;s=sqlite3.connect('file:.control/p02/p02.db?mode=ro',uri=
 5. 全量测试；
 6. 再 `start`。
 
-## 9. 迁移/搬迁注意
+## 10. 迁移/搬迁注意
 
 - worktree 的 gitdir 是绝对路径，搬目录后必须在**母仓库**里执行
   `git worktree repair <新路径...>`，否则工作树失效。

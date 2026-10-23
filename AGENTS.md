@@ -79,7 +79,7 @@ python -m unittest discover -s tests
 ```
 
 - **不要加 `-t .`**：`tests/` 没有 `__init__.py`，会报 `Start directory is not importable`。
-- 基线：`382` 项全绿（2026-10-24 04:05，SS-V01-005-R1 交付时实测）。新增任务不得让既有用例变红。
+- 基线：`402` 项全绿（2026-10-24 04:38，SS-V01-006 交付时实测）。新增任务不得让既有用例变红。
 - 涉及 Codex 的用例一律用 `tests/fake_codex.py`，**不执行真实开发**。
 - 断言要能失败：先证明缺陷存在（测试红），再改到绿。
 
@@ -128,6 +128,11 @@ python -m unittest discover -s tests
 - 报告、回执、验收明细、数据库行都属于证据，不得删除、不得为了"好看"重写。
 - Reviewer 的 `candidate_sha` 必须与 Bridge 的真实 `head_sha` **完整一致**（40 或 64 位十六进制）。前缀、截断、附加字符、其他合法 SHA 一律视为 `REVIEW_INVALID` → `P02_BLOCKED_REVIEW_INVALID`，不得进入 READY。
 - 需要修正历史时，只能**追加**新文件（例如 `.duplicate.json`），不能覆盖原件。
+- 中断恢复按证据分级（SS-V01-006）：持有者存活**不接管**；有 `finalizing/` Journal、`finalized/`
+  清单或终态报告在位**可安全重排队**（认领转 `requeued`，历史留 `history`）；证据不足
+  （无 Journal、发布不可对账、worktree 不一致、终态缺报告）一律 `needs_human` 并拒绝自动执行。
+  恢复持 `recovery.lock`；启动就绪以「单实例锁 + PID 存活 + 心跳新鲜」为准，不得谎报 RUNNING。
+  `needs_human` 只提供只读查看，**不提供强制成功入口**。
 
 ## 9. 遇到未知来源的工作区修改：立即停止并报告
 

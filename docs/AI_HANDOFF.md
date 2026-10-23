@@ -56,7 +56,8 @@
 | SS-V01-003-R1 测试解释器可信路径验证 | 完成 | `66cb2ef` |
 | SS-V01-004 Reviewer Candidate SHA 严格绑定 | 完成 | `0db54fc` |
 | SS-V01-005 Publisher 发布门禁与幂等性加固 | 完成 | `0fa7f45` |
-| SS-V01-005-R1 PR 来源仓库身份验证 | 完成 | 见交付报告 |
+| SS-V01-005-R1 PR 来源仓库身份验证 | 完成 | `7eb8988` |
+| SS-V01-006（P05-C）Supervisor 中断恢复与安全重调度 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
@@ -79,10 +80,10 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 382 tests in 446.311s — OK`（SS-V01-005-R1 交付前实测） |
-| 时间 | 2026-10-24 04:05（本地） |
+| 结果 | `Ran 402 tests in 421.460s — OK`（SS-V01-006 交付前实测） |
+| 时间 | 2026-10-24 04:38（本地） |
 | 证据来源 | 本机实际执行输出（`PYTHONDONTWRITEBYTECODE=1`） |
-| 上一基线 | `374 OK`（2026-10-24 03:43，SS-V01-005），新增 8 项来源身份回归后升为 382 |
+| 上一基线 | `382 OK`（2026-10-24 04:05，SS-V01-005-R1），新增 20 项恢复回归后升为 402 |
 | 之后是否复跑 | 无。接手后须自行复跑；不得把上面这行当成"我刚跑过" |
 
 ## 6. 运行状态（必须重新核实）
@@ -129,6 +130,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 7. **Demo 仓库四条本地分支**（`p01/*`、`p02/*` 共 4 条）未推送，功能已被 PR #1 覆盖，仅作过程证据。
 8. **孤立 worktree 目录**（核实 2026-10-24 01:53）：`.git/worktrees` 不存在，`git worktree list` 只有主工作区，但 `.worktrees/` 下仍有 6 个目录。**不要复用、不要删除、不要手工注册**，需建 worktree 时由 P02 重新创建。详见 `docs/DEVLOG.md` 迁移条目的「当前状态」段。
 9. **测试命令策略是"缺配置即拒绝"**（SS-V01-003）：未写入 `test_command_policy.approved` 的部署/临时根，一律拒绝执行项目测试，任务会以 `P01_TASK_REJECTED` / `P02_TASK_REJECTED`（或执行阶段 `*_BLOCKED_TEST_COMMAND`）收尾。这是设计意图，不是故障；迁移或新建环境时必须同步该段配置。
+10. **恢复是分级而非全自动**（SS-V01-006）：`needs_human/` 下的任务必须人工核对后自行决定后续动作，本期没有强制成功命令；SAFE_TO_RESUME 只覆盖有明确持久证据的情形。
 
 ## 9. 需要人工确认的事项
 
@@ -142,7 +144,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 ```bash
 cd /e/Documents/AI-Developer/repositories/SoloShip      # 或 Windows 路径
 git rev-parse HEAD && git status --short                # 核对版本与工作区
-python -m unittest discover -s tests                    # 确认 382 项基线
+python -m unittest discover -s tests                    # 确认 402 项基线
 python bridge/supervisor.py status --root .             # 重新核实运行态
 ```
 

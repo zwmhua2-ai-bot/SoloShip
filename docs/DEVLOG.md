@@ -5,7 +5,46 @@
 
 ---
 
-## SS-V01-005-R1 · GitHub PR 来源仓库身份验证（本条目）
+## SS-V01-006 · P05-C：Supervisor 中断恢复与安全重调度（本条目）
+
+- **提交**：见交付报告
+- **基线**：`7eb8988`
+- **原因**：`claim()` 检出失联认领后只做 `_defer()`（`UNFINISHED_CLAIM`），任务被永久停放；
+  启动确认只看 `state.json` 的 pid/state，不校验锁与心跳；恢复无互斥；
+  `P02_NEEDS_HUMAN` 无正式入口。
+- **决策**：
+  1. 新增四分类 `classify_interrupted()`：**ACTIVE**（持有者存活，不接管）/
+     **SAFE_TO_RESUME**（P00 无副作用；无入库且无 worktree；`finalizing/` Journal 完整；
+     `finalized/` 清单完整；终态且报告在位）/ **NEEDS_HUMAN**（未入库但有 worktree；
+     有 job 无 Journal；发布结果不可对账；终态但报告缺失；worktree 状态不一致）/
+     **DEFERRED**（门禁等停放任务，保持停放）。
+  2. `recover_on_start()`：持 `recovery.lock`（O_EXCL，持锁者失联才接管）→
+     先重放最终化 Journal → 逐条分类 → 安全的重排队（claim 转 `requeued`，
+     任务文件从 `deferred/` 回 inbox，**历史认领记录保留在 `history`**）、
+     证据不足的写 `.control/supervisor/needs_human/<kind>__<task>.json` 并把认领转
+     `needs_human`（拒绝自动执行）→ 写 `recovery_summary.json`。
+  3. `claim()` 支持 `requeued`（可重新认领，继承 history）与 `needs_human`（拒绝执行）；
+     `tick()` 对 `needs_human` 走 defer，**绝不自动执行**。
+  4. `startup_ready(root, pid)`：单实例锁 + PID 存活 + 心跳新鲜度（30s）三者同时满足
+     才算就绪；`_wait_ready()` 改用它，启动失败带明确原因，不谎报 RUNNING。
+  5. `build_status()` 增 `recovery` 摘要；`cmd_recovery` 扩展为只读输出
+     待恢复清单 + 恢复摘要 + `needs_human` 明细。**没有任何"标记成功"能力。**
+  6. 无数据库 schema 变更、无任务协议变更；`.control/` 下新增
+     `needs_human/`、`recovery.lock`、`recovery_summary.json`。
+- **测试**：新增 `tests/test_p05c_recovery.py` 20 项（AC-01..AC-14），含双恢复竞争、
+  失联持锁者接管、陈旧 worktree 不删除、重复恢复幂等、安全任务重排队后真实跑通到
+  `P02_READY_FOR_HUMAN`。修复前全部 ERROR/FAIL。全量 `402 OK`
+  （2026-10-24 04:38，421.460s）；既有 `test_p05b_supervisor.py` 31 项未受影响。
+- **兼容性**：`tick()` 对运行中失联认领仍按 `UNFINISHED_CLAIM` 停放（保守默认）；
+  启动路径（`start --foreground` 与 `_run`）在 `detect_unfinished()` 之后调用
+  `recover_on_start()`。真实 Supervisor 未重启。
+- **遗留**：SAFE_TO_RESUME 目前不区分"任务已完成只需归档"与"需要重新执行"，
+  统一交给 P02 幂等处理（DUPLICATE/恢复路径）；预算/限流类 Deferred 重试策略未实现；
+  `needs_human` 需人工在核对后自行决定后续动作（本期不提供强制成功入口）。
+
+---
+
+## SS-V01-005-R1 · GitHub PR 来源仓库身份验证
 
 - **提交**：见交付报告
 - **基线**：`0fa7f45`
@@ -294,4 +333,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382 → 402）来自各阶段报告与提交信息，属**可核实**范围。
