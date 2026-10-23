@@ -6,7 +6,7 @@ SoloShip Supervisor 启动脚本（供 Windows 任务计划程序调用）
 #>
 [CmdletBinding()]
 param(
-    [string]$Root = 'C:\Users\hua\SoloShip-P00'
+    [string]$Root = 'E:\Documents\AI-Developer\repositories\SoloShip'
 )
 
 $ErrorActionPreference = 'Stop'

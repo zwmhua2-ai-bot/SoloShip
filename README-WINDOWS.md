@@ -1,4 +1,8 @@
 # SoloShip B-Lite：Windows 11 · P00 本地交接验证
+> **当前部署路径**：`E://Documents//AI-Developer//repositories//SoloShip`。
+> 下文描述的是压缩包安装方式（解到 `%USERPROFILE%\SoloShip-P00`），
+> 与本机现部署位置不同，按文中路径操作前请先对照实际目录。
+
 
 适用于：Windows 11 + ChatGPT 桌面 Work + Codex 桌面端。**P00 不要求安装 Codex CLI**，只需要 Python 3.11+。
 

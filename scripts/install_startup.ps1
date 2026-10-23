@@ -12,7 +12,7 @@ SoloShip 登录自启安装脚本（P05-B）
 #>
 [CmdletBinding()]
 param(
-    [string]$Root = 'C:\Users\hua\SoloShip-P00',
+    [string]$Root = 'E:\Documents\AI-Developer\repositories\SoloShip',
     [string]$TaskName = 'SoloShip Supervisor',
     [switch]$Approve,
     [switch]$Uninstall
