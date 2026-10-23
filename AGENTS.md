@@ -89,7 +89,19 @@ python -m unittest discover -s tests
 
 1. **执行授权**：`security.require_auto_dev()` 在 `P01Bridge.process_one`、`P02Bridge.process_one`、`Supervisor.tick` 三处强制检查。`BLOCKED` 时不得调用 Codex / 审查 / 项目测试。CLI `main()` 里的检查**不足以**覆盖内部调用。
 2. **凭据**：配置内不得出现 Token；发布依赖环境变量 `GH_TOKEN`；子进程环境经 `env_guard.scrub_secrets` 清洗。禁止回退到账号级缓存 Token。
-3. **发布**：`github.enabled=false` 与 `allow_merge=false` 时不得发起任何远端写操作；恢复流程不得调用 publisher。
+3. **发布**：`github.enabled=false` 时不得发起任何远端写操作；恢复流程不得调用 publisher。
+
+**发布相关开关的真实生效方式**（以当前源码为准，三种性质不能混为一谈）：
+
+| 开关 | 性质 | 实际生效位置 |
+| --- | --- | --- |
+| `github.enabled` | 配置声明 + 运行时检查 | `github_publisher.py:86` 读入，`publish():201` 短路返回 `SKIPPED_DISABLED`，不执行任何远端动作 |
+| `require_env_token` / `token_env` | 配置声明 + 运行时检查 | `_credential_args():115` 与 `_token_missing():121`：Token 只经环境变量传入，缺失即拒绝，不回退账号级缓存 |
+| `allow_merge` / `allow_force_push` | **仅配置声明** | **无任何 `bridge/*.py` 读取**；`grep "def .*merge\|def .*push" bridge/*.py` 零命中 |
+
+因此：**系统当前不具备合并与强制推送能力**——不是因为 `allow_merge=false` 被运行时校验，
+而是因为对应代码路径不存在。新增任何远端写能力前，必须先在本表补上运行时检查位置，
+否则视为规范被破坏。
 
 沙箱状态必须如实呈现：`SANDBOX_BLOCKED` 就是未隔离，`WINDOWS_TEST_MODE` 只是"显式授权的本机测试模式"，**不得**描述为沙箱隔离。
 

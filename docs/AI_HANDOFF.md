@@ -8,16 +8,39 @@
 
 ## 1. 版本与分支
 
-| 项 | 值 | 核实时间 |
-| --- | --- | --- |
-| 仓库根 | `E:\Documents\AI-Developer\repositories\SoloShip` | 2026-10-24 01:11 |
-| 文档基线 SHA | `b754467`（`chore: 迁移到 E 盘`） | 2026-10-24 01:11 |
-| 当前分支 | `ss-v01-002/finalize-recovery` | 2026-10-24 01:11 |
-| 工作区 | 干净（0 处未提交改动） | 2026-10-24 01:11 |
-| 远程 | `origin` → `github.com/zwmhua2-ai-bot/SoloShip`（**私有**，当前分支未推送） | 2026-10-24 01:11 |
+### 1.1 本地 Git 状态（核实时间 2026-10-24 01:53）
 
-> 说明：本文件本身会随 SS-DOC-001 一起提交，因此**不能**记录提交后的新 SHA。
-> 上面写的是文档编写时的基线；实际 HEAD 以 `git rev-parse HEAD` 为准。
+| 项 | 值 |
+| --- | --- |
+| 仓库根 | `E:\Documents\AI-Developer\repositories\SoloShip` |
+| 当前分支 | `main` |
+| HEAD 完整 SHA | `29401afda3ea629dac4f5cb1a333ba56f81825db` |
+| 工作区 | 干净（`git status --porcelain` 无输出） |
+| 上游跟踪 | `origin/main` |
+| 本地与上游 | ahead 6 / behind 0（**仅比较本地引用**，见 1.3） |
+
+### 1.2 分支现状（同次核实）
+
+| 分支 | 指向 | 说明 |
+| --- | --- | --- |
+| `main` | `29401af` | 当前分支。2026-10-24 01:39:17 由 `b1b5430` 快进至此（reflog：`ff: main -> 29401af`，CAS 记录） |
+| `ss-v01-002/finalize-recovery` | `29401af` | 与 `main` **同一 SHA**，不再单独领先；已不是"待合并开发分支" |
+| `backup/main-before-ff-20261024` | `b1b5430` | 快进前的备份点，2026-10-24 01:39:17 创建 |
+
+### 1.3 远端状态：UNKNOWN（未实时确认）
+
+| 项 | 值 |
+| --- | --- |
+| 已知 `origin/main` 引用 | `24d03375fc874d28a24e115edff22d5ee7a8cd1d` |
+| 该引用最近更新时间 | 2026-10-23 23:26:58（`.git/refs/remotes/origin/main` mtime；`.git/FETCH_HEAD` 为 2026-10-23 23:26:46） |
+| 此后是否 fetch 过 | **否**。远端在该时刻之后有无新提交，本地无法确定 |
+| 远程 | `origin` → `github.com/zwmhua2-ai-bot/SoloShip`（**私有**） |
+
+> 1.1 的 ahead/behind 是**本地引用**的比较结果，不等于远端真实状态。
+> 要确认远端必须先 `git fetch` 并取得授权；在那之前一律按 **UNKNOWN** 处理，不得写成"已同步"。
+
+> 说明：本文件本身会随任务提交，因此**不能**记录提交后的新 SHA。
+> 实际 HEAD 以 `git rev-parse HEAD` 为准；上面所有值都带核实时间，过期即失效。
 
 ## 2. 已完成任务
 
@@ -27,14 +50,15 @@
 | SS-V01-002 最终化一致性与报告恢复 | 完成 | `f407d88` + `c63b926` |
 | SS-V01-002-R1 完成后报告丢失恢复 | 完成 | `1e3f81e` |
 | 仓库迁移至 E 盘 | 完成 | `b754467` |
-| SS-DOC-001 交接文档体系 | 本文件所在任务 | 见交付报告 |
+| SS-DOC-001 交接文档体系 | 完成 | `29401af` |
+| SS-DOC-002 交接文档一致性修正 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
 
 ## 3. 正在进行的任务
 
-无。上一张卡（SS-V01-002-R1）已交付并通过文档验收前检查。
+无。SS-DOC-002（交接文档一致性修正）本次交付，等待验收。
 
 ## 4. 下一张任务卡
 
@@ -42,15 +66,17 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 
 - P05-C：未收尾/推迟任务恢复、`cmd_start` 存活二次确认、并行扩展。
 - 收尾业务侧 PR #1（Draft，AC-04 `partially_covered`，`verified=False`）。
+- 补写架构设计说明与数据契约（缺口已登记于 `PROGRESS.md` §7）。
 
 ## 5. 最新测试结果与证据来源
 
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 289 tests in 219.229s — OK` |
+| 结果 | `Ran 289 tests in 219.229s — OK`（**历史记录，非当前会话执行**） |
 | 时间 | 2026-10-24 01:14:44（本地） |
-| 证据来源 | 本机实际执行输出；文档编写前最后一次全量运行 |
+| 证据来源 | 本机实际执行输出；SS-DOC-001 编写前最后一次全量运行 |
+| 之后是否复跑 | SS-DOC-001-V1（只读评估）与 SS-DOC-002（文档修改）均**未**执行测试；接手后须自行复跑 |
 
 ## 6. 运行状态（必须重新核实）
 
@@ -78,6 +104,11 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | `windows_test_mode.enabled` | `true`（`risk_accepted=true`） |
 | `isolation_claim` | `NONE`（明示无操作系统级隔离） |
 
+> **上表是"配置声明"，不等于"运行时检查"。**
+> 真实生效方式见 `AGENTS.md` §7 的开关表：`github.enabled` 与 `require_env_token`
+> 有对应的运行时短路/校验；`allow_merge` / `allow_force_push` **没有任何代码读取**，
+> 系统根本不存在合并与强制推送能力。不要把后者的"`false`"当成一道被执行的权限校验。
+
 ## 8. 已知问题与风险
 
 1. **旧目录残留**：`C:\Users\hua\SoloShip-P00` 迁移后无法重命名（Access Denied），内含过期 `.control` 数据库，已放 `_MIGRATED_TO_E.txt` 标记，**不得**再作为运行目录。
@@ -87,6 +118,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 5. **`NEEDS_HUMAN` 无复位入口**：人工修复后需自行改库状态，暂无命令。
 6. **文档中残留旧路径**：`docs/P05B-*.md` 与 `demo/soloship-demo/README.md` 属历史记录，保留原文，不作为操作依据。
 7. **Demo 仓库四条本地分支**（`p01/*`、`p02/*` 共 4 条）未推送，功能已被 PR #1 覆盖，仅作过程证据。
+8. **孤立 worktree 目录**（核实 2026-10-24 01:53）：`.git/worktrees` 不存在，`git worktree list` 只有主工作区，但 `.worktrees/` 下仍有 6 个目录。**不要复用、不要删除、不要手工注册**，需建 worktree 时由 P02 重新创建。详见 `docs/DEVLOG.md` 迁移条目的「当前状态」段。
 
 ## 9. 需要人工确认的事项
 
