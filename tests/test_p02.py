@@ -163,13 +163,23 @@ class P02BridgeTests(unittest.TestCase):
         self.assertEqual(receipt["fix_rounds"], 0)
         self.assertIn("INVALID", receipt["evidence_status"]["review"])
 
-    # 8. 重复提交不导致并发重复修改
+    # 8. 重复提交不导致并发重复修改，且不覆盖原始回执证据
     def test_duplicate_submission(self):
         task = make_task("p02_dup_0001")
         first = self.submit(task)
-        second = self.submit(task)
-        self.assertEqual(first["job_id"], second["job_id"])
-        self.assertEqual(second["status"], p02.DUPLICATE)
+        canonical = self.bridge.receipts / "demo-app__p02_dup_0001.receipt.json"
+        before = canonical.read_text(encoding="utf-8")
+
+        target = self.bridge.inbox / f"{task['request_id']}.ready.json"
+        target.write_text(json.dumps(task, ensure_ascii=False), encoding="utf-8")
+        status = self.bridge.process_one(target)
+
+        self.assertEqual(status, p02.DUPLICATE)
+        self.assertEqual(first["job_id"], json.loads(before)["job_id"])
+        self.assertEqual(canonical.read_text(encoding="utf-8"), before,
+                         "重复投递不得覆盖原始回执")
+        self.assertTrue((self.bridge.receipts / "demo-app__p02_dup_0001.duplicate.json").is_file(),
+                        "重复投递应留下旁证")
         with sqlite3.connect(self.bridge.db_path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM p02_jobs").fetchone()[0], 1)
 

@@ -464,6 +464,7 @@ class Supervisor:
         self.counts = {"processed": 0, "failed": 0, "deferred": 0, "skipped": 0}
         self.last_result: dict | None = None
         self.current_task: dict | None = None
+        self.recovery_report: dict = {}
         self.started_at = utc_now()
 
     # ------------------------------------------------------------- bridges
@@ -522,9 +523,34 @@ class Supervisor:
             self.log.removeHandler(handler)
 
     # ------------------------------------------------------------- recovery
+    def recover_p02_finalizing(self) -> dict:
+        """启动时重放 P02 最终化 Journal。
+
+        只补交付物（报告/归档/状态），不调用 Codex、不创建 PR。
+        Journal 与数据库对账：即使上次是「Journal 已写、DB 还没进 FINALIZING」也能修。
+        """
+        p02_dir = self.root / ".control" / "p02"
+        journal_dir = p02_dir / "finalizing"
+        journals = list(journal_dir.glob("*.json")) if journal_dir.is_dir() else []
+        if not journals and not (p02_dir / "p02.db").is_file():
+            return {"skipped": "NO_STATE"}
+        try:
+            summary = self.p02().recover_finalizing()
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不得阻断 Supervisor 启动
+            self.log.warning("P02 最终化恢复失败: %s: %s", type(exc).__name__, exc)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        if summary.get("recovered") or summary.get("needs_human") or summary.get("missing_reports"):
+            self.log.info("P02 最终化恢复：recovered=%d needs_human=%d missing_reports=%d",
+                          len(summary.get("recovered") or []),
+                          len(summary.get("needs_human") or []),
+                          len(summary.get("missing_reports") or []))
+        return summary
+
     def detect_unfinished(self) -> list[dict]:
         """启动时登记「已受理但未收尾」的任务；本阶段绝不自动重跑。"""
         found: list[dict] = []
+        # 先重放最终化 Journal：能补齐的当场补齐，不进入「未收尾」名单。
+        self.recovery_report = self.recover_p02_finalizing()
         db = self.root / ".control" / "p02" / "p02.db"
         if db.is_file():
             import sqlite3

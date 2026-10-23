@@ -60,6 +60,15 @@ BUSY = "P02_BUSY"
 FINALIZING = "P02_FINALIZING"      # 最终化进行中：DB 可见、证据尚未齐全
 NEEDS_HUMAN = "P02_NEEDS_HUMAN"    # 无法安全恢复：明确交人工，绝不假装成功
 ERROR = "P02_ERROR"                # 未预期的执行异常（与 BUSY 严格区分）
+FINALIZE_ERROR = "P02_FINALIZE_ERROR"   # 最终化阶段的故障（报告/归档/状态写入）
+JOURNAL_SCHEMA = "soloship.p02.finalizing/v1"
+
+# 进入这些状态即视为已有终态结论，恢复流程只核对、不改写
+TERMINAL_STATUSES = {
+    READY, BLOCKED_REVIEW, BLOCKED_REVIEW_INVALID, BLOCKED_TESTS, BLOCKED_LIMIT,
+    BLOCKED_TAMPER, BLOCKED_PATH, BLOCKED_CODEX, BLOCKED_TIMEOUT, BLOCKED_CLI,
+    BLOCKED_AUTH, BLOCKED_MODEL, DUPLICATE, REJECTED, NEEDS_HUMAN,
+}
 
 
 class RequestBusy(RuntimeError):
@@ -67,6 +76,13 @@ class RequestBusy(RuntimeError):
 
     历史上 `process_one` 用 `except RuntimeError` 兜住整个 `_run_job`，
     于是 git 失败、路由错误等任何 RuntimeError 都被报成 P02_BUSY，日志失真。
+    """
+
+
+class FinalizeError(RuntimeError):
+    """最终化（Journal/报告/归档/状态）故障。只映射 P02_FINALIZE_ERROR。
+
+    抛出后 Journal 保留，供 `recover_finalizing()` 重放，不重复执行 Codex。
     """
 
 
@@ -274,6 +290,245 @@ class P02Bridge:
         self.finish(job_id, mark_finished=False,
                     **{k: v for k, v in fields.items() if k != "status"})
 
+    # --------------------------------------------------- finalize journal
+    def _journal_path(self, job_id: str) -> Path:
+        return self.finalizing_dir / f"{job_id}.json"
+
+    def write_journal(self, *, job_id: str, key: str, request_id: str, project_id: str,
+                      status: str, source_name: str, evidence: dict, receipt: dict,
+                      artifacts: dict, review_payload: dict | None) -> Path:
+        """最终化日志：**先于**任何交付物、也先于 DB 状态变更落盘。
+
+        除结构化证据外，还记录三份交付物的**最终文本**，因此重启后写出的报告
+        与崩溃前逐字节一致，既能补齐缺失文件，也能识别内容冲突。
+        全程不含进程内对象，不需要再次调用 Codex、也不会重复发布 PR。
+        """
+        body = {
+            "schema": JOURNAL_SCHEMA, "job_id": job_id, "key": key,
+            "request_id": request_id, "project_id": project_id, "status": status,
+            "source_name": source_name, "evidence": evidence, "receipt": receipt,
+            "artifacts": artifacts, "review": review_payload, "created_at": utc_now(),
+        }
+        body["payload_sha256"] = sha256_text(
+            json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        path = self._journal_path(job_id)
+        atomic_text(path, dump_json(body))
+        return path
+
+    def load_journal(self, path: Path) -> tuple[dict | None, str]:
+        """读取并校验 Journal 完整性。校验失败一律不采信。"""
+        data = _read_json_file(path)
+        if not isinstance(data, dict):
+            return None, "JOURNAL_UNREADABLE: 无法解析 Journal"
+        if data.get("schema") != JOURNAL_SCHEMA:
+            return None, f"JOURNAL_SCHEMA_MISMATCH: {data.get('schema')!r}"
+        recorded = data.pop("payload_sha256", None)
+        actual = sha256_text(
+            json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        data["payload_sha256"] = recorded
+        if not recorded or recorded != actual:
+            return None, "JOURNAL_INTEGRITY: payload_sha256 不匹配"
+        return data, ""
+
+    def begin_finalizing(self, job_id: str) -> None:
+        """推进到 FINALIZING，且**不写** finished_at（避免提前看起来已完成）。"""
+        self.finish(job_id, mark_finished=False, status=FINALIZING)
+
+    @staticmethod
+    def review_payload(review) -> dict | None:
+        """把 ReviewResult 压成可 JSON 化的证据摘要（仅供审计与一致性校验）。"""
+        if review is None:
+            return None
+        payload = dict(review.evidence())
+        payload["ok"] = bool(getattr(review, "ok", True))
+        return payload
+
+    def artifact_paths(self, key: str) -> dict[str, Path]:
+        return {
+            "receipt": self.receipts / f"{key}.receipt.json",
+            "report_json": self.reports / f"{key}.report.json",
+            "report_md": self.reports / f"{key}.report.md",
+        }
+
+    def build_artifacts(self, key: str, evidence: dict, receipt: dict, review) -> dict[str, str]:
+        """三份交付物的最终文本。写入与核对共用同一份定义。"""
+        return {
+            "receipt": dump_json(receipt),
+            "report_json": dump_json(evidence),
+            "report_md": self.render_report(evidence, receipt, review),
+        }
+
+    def _materialize(self, key: str, artifacts: dict[str, str]) -> None:
+        paths = self.artifact_paths(key)
+        for name, text in artifacts.items():
+            atomic_text(paths[name], text)
+
+    def _archive_source(self, source: Path) -> None:
+        """幂等归档：源文件已不在（上次已完成归档）就不动。"""
+        if not source.exists():
+            return
+        shutil.move(str(source), str(self.archive / f"{source.name}.{uuid.uuid4().hex[:8]}"))
+
+    def check_journal_evidence(self, journal: dict) -> list[str]:
+        """跨证据一致性校验：HEAD / Review candidate / 测试结论必须自洽。"""
+        problems: list[str] = []
+        evidence = journal.get("evidence")
+        receipt = journal.get("receipt")
+        job_id, request_id = journal.get("job_id"), journal.get("request_id")
+        project_id = journal.get("project_id")
+
+        if not (job_id and request_id and project_id):
+            return ["MISSING_IDS: Journal 缺少 job_id/request_id/project_id"]
+        if journal.get("status") not in (TERMINAL_STATUSES - {NEEDS_HUMAN}):
+            problems.append(f"STATUS_NOT_TERMINAL: {journal.get('status')}")
+        if not isinstance(evidence, dict) or not evidence:
+            problems.append("MISSING_EVIDENCE: 缺少 evidence")
+        if not isinstance(receipt, dict) or not receipt:
+            problems.append("MISSING_RECEIPT: 缺少 receipt")
+        artifacts = journal.get("artifacts")
+        if not isinstance(artifacts, dict) or set(artifacts) != {"receipt", "report_json", "report_md"}:
+            problems.append("MISSING_ARTIFACTS: Journal 未记录完整交付物文本")
+        elif any(not isinstance(v, str) or not v for v in artifacts.values()):
+            problems.append("EMPTY_ARTIFACTS: 交付物文本为空")
+        if problems:
+            return problems
+
+        if evidence.get("job_id") != job_id or evidence.get("request_id") != request_id:
+            problems.append("EVIDENCE_ID_MISMATCH")
+        if receipt.get("job_id") != job_id or receipt.get("request_id") != request_id:
+            problems.append("RECEIPT_ID_MISMATCH")
+        if journal.get("key") != f"{project_id}__{request_id}":
+            problems.append("KEY_MISMATCH")
+
+        head = evidence.get("head_commit")
+        if receipt.get("head_commit") != head:
+            problems.append(
+                f"HEAD_COMMIT_CONFLICT: evidence={head} receipt={receipt.get('head_commit')}")
+
+        review = journal.get("review") or {}
+        candidate = review.get("candidate_sha")
+        if candidate and head and candidate != head:
+            problems.append(f"REVIEW_CANDIDATE_SHA_CONFLICT: {candidate} != {head}")
+
+        tests = evidence.get("tests") or {}
+        if isinstance(tests, dict) and "exit_code" in tests:
+            expected_ok = tests.get("exit_code") == 0
+            if receipt.get("tests_ok") is not None and bool(receipt["tests_ok"]) != expected_ok:
+                problems.append(
+                    f"TESTS_RESULT_CONFLICT: exit={tests.get('exit_code')} "
+                    f"receipt.tests_ok={receipt['tests_ok']}")
+        return problems
+
+    def _job_status(self, job_id: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute("SELECT status FROM p02_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return row[0] if row else None
+
+    def _needs_human(self, job_id: str, reason: str, *, mark_db: bool = True) -> dict:
+        """无法安全恢复：留痕 + 明确状态，绝不假装成功。"""
+        marker = self.finalizing_dir / f"{job_id}.needs_human.json"
+        atomic_text(marker, dump_json({"job_id": job_id, "reason": reason,
+                                       "at": utc_now()}))
+        if mark_db:
+            with self.connect() as db:
+                db.execute("UPDATE p02_jobs SET status=? WHERE job_id=?", (NEEDS_HUMAN, job_id))
+        print(f"[{NEEDS_HUMAN}] {job_id}: {reason}", flush=True)
+        return {"state": "needs_human", "job_id": job_id, "reason": reason}
+
+    def _recover_one(self, path: Path) -> dict:
+        """重放单条 Journal：补交付物、补归档、推进状态；冲突一律交人工。"""
+        fallback_id = path.stem
+        journal, problem = self.load_journal(path)
+        if problem:
+            return self._needs_human(fallback_id, problem,
+                                     mark_db=self._job_status(fallback_id) is not None)
+
+        job_id = journal["job_id"]
+        problems = self.check_journal_evidence(journal)
+        if problems:
+            return self._needs_human(job_id, "; ".join(problems),
+                                     mark_db=self._job_status(job_id) is not None)
+
+        key, target_status = journal["key"], journal["status"]
+        artifacts = journal["artifacts"]
+        row_status = self._job_status(job_id)
+        if row_status is None:
+            return self._needs_human(job_id, "JOB_ROW_MISSING: 数据库无对应任务行", mark_db=False)
+
+        # 1) 交付物：缺失补写；已存在且逐字节一致则保留；冲突绝不覆盖
+        paths = self.artifact_paths(key)
+        for name, expected in artifacts.items():
+            target = paths[name]
+            if target.is_file():
+                try:
+                    current = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    return self._needs_human(job_id, f"ARTIFACT_UNREADABLE: {target.name} ({exc})")
+                if current != expected:
+                    return self._needs_human(job_id, f"ARTIFACT_CONFLICT: {target.name}")
+            else:
+                atomic_text(target, expected)
+
+        # 2) 归档：源文件仍在 inbox 就补一次（幂等，不产生重复副本）
+        source_name = journal.get("source_name")
+        if source_name:
+            self._archive_source(self.inbox / source_name)
+
+        # 3) 状态：Journal 可能是唯一真相（AC-10：DB 尚未进入 FINALIZING）
+        if row_status != target_status:
+            self.finish(job_id, status=target_status)
+
+        path.unlink(missing_ok=True)
+        print(f"[{target_status}] 恢复最终化 {job_id}（原状态 {row_status}）", flush=True)
+        return {"state": "recovered", "job_id": job_id, "status": target_status,
+                "from": row_status}
+
+    def recover_job(self, job_id: str) -> dict:
+        path = self._journal_path(job_id)
+        if not path.is_file():
+            return {"state": "none", "job_id": job_id}
+        return self._recover_one(path)
+
+    def scan_missing_reports(self, with_journal: set[str] | None = None) -> list[dict]:
+        """终态任务报告缺失、且没有 Journal 可重放 → 只能交人工（不写库，保历史）。"""
+        with_journal = with_journal or set()
+        found: list[dict] = []
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT job_id, project_id, request_id, status FROM p02_jobs").fetchall()
+        for job_id, project_id, request_id, status in rows:
+            if status not in TERMINAL_STATUSES or status == NEEDS_HUMAN:
+                continue
+            if job_id in with_journal:
+                continue
+            key = f"{project_id}__{request_id}"
+            if (self.reports / f"{key}.report.md").is_file():
+                continue
+            marker = self.finalizing_dir / f"{job_id}.needs_human.json"
+            if not marker.is_file():
+                atomic_text(marker, dump_json({
+                    "job_id": job_id, "at": utc_now(),
+                    "reason": "REPORT_MISSING_NO_EVIDENCE: 报告缺失且无 Journal 可重放",
+                }))
+            found.append({"job_id": job_id, "request_id": request_id,
+                          "status": status, "reason": "REPORT_MISSING_NO_EVIDENCE"})
+        return found
+
+    def recover_finalizing(self) -> dict:
+        """扫描全部 Journal 并与数据库对账。多次调用结果收敛（幂等）。"""
+        self.finalizing_dir.mkdir(parents=True, exist_ok=True)
+        summary: dict[str, Any] = {"scanned": 0, "recovered": [], "needs_human": []}
+        pending: set[str] = set()
+        for path in sorted(self.finalizing_dir.glob("*.json")):
+            if path.name.endswith(".needs_human.json"):
+                continue
+            pending.add(path.stem)
+            summary["scanned"] += 1
+            outcome = self._recover_one(path)
+            summary["recovered" if outcome["state"] == "recovered" else "needs_human"].append(outcome)
+        summary["missing_reports"] = self.scan_missing_reports(pending)
+        return summary
+
     def record_round(self, job_id: str, round_no: int, kind: str, **fields: Any) -> None:
         payload = {
             "job_id": job_id, "round_no": round_no, "kind": kind,
@@ -369,9 +624,14 @@ class P02Bridge:
         try:
             with self.request_lock(obj["request_id"]):
                 return self._run_job(source, obj)
-        except RuntimeError as exc:
+        except RequestBusy as exc:
             print(f"[{BUSY}] {source.name}: {exc}", flush=True)
             return BUSY
+        except FinalizeError as exc:
+            # 最终化故障：Journal 已保留，可由 recover_finalizing() 重放
+            print(f"[{FINALIZE_ERROR}] {source.name}: {exc}", flush=True)
+            return FINALIZE_ERROR
+        # 其余异常一律不吞：保留原始类型与堆栈，避免被误标成 P02_BUSY
 
     def _run_job(self, source: Path, obj: dict) -> str:
         try:
@@ -381,11 +641,23 @@ class P02Bridge:
         request_id, project_id = obj["request_id"], obj["project_id"]
         key = f"{project_id}__{request_id}"
         if outcome == DUPLICATE:
+            # 上次可能停在最终化中途：先按 Journal 补齐；恢复成功就返回真实终态。
+            recovered = self.recover_job(job_id)
+            if recovered.get("state") == "recovered":
+                self._archive_source(source)
+                print(f"[RECOVERED] {key} => {job_id}; status={recovered.get('status')}",
+                      flush=True)
+                return str(recovered.get("status") or DUPLICATE)
             payload = {"phase": "P02", "status": DUPLICATE, "job_id": job_id, "request_id": request_id,
                        "project_id": project_id, "note": "同一任务已处理过，未重复调用 Codex",
                        "finished_at": utc_now()}
-            atomic_text(self.receipts / f"{key}.receipt.json", dump_json(payload))
-            shutil.move(str(source), str(self.archive / f"{source.name}.{uuid.uuid4().hex[:8]}"))
+            # 不覆盖已有回执：它是历史交付证据，重复投递只追加旁证文件。
+            target = self.receipts / f"{key}.receipt.json"
+            if target.exists():
+                atomic_text(self.receipts / f"{key}.duplicate.json", dump_json(payload))
+            else:
+                atomic_text(target, dump_json(payload))
+            self._archive_source(source)
             print(f"[{DUPLICATE}] {key} => {job_id}", flush=True)
             return DUPLICATE
 
@@ -431,7 +703,7 @@ class P02Bridge:
                 raise ValueError(f"git worktree add 失败: {proc.stderr.strip()}")
         except Exception as exc:  # noqa: BLE001
             evidence["fatal"] = f"{type(exc).__name__}: {exc}"
-            self.finish(job_id, status=BLOCKED_CODEX, repo=str(repo))
+            self.record_meta(job_id, repo=str(repo))
             return self._finalize(source, key, job_id, BLOCKED_CODEX, evidence, request_id, project_id)
 
         self.register_worktree(worktree, job_id, request_id, "ACTIVE")
@@ -445,8 +717,8 @@ class P02Bridge:
                 evidence["explore_ok"] = explore.ok
             except model_router.RouterError as exc:
                 evidence.setdefault("errors", []).append({"stage": "explore_route", "error": str(exc)})
-                self.finish(job_id, status=BLOCKED_MODEL, repo=str(repo), worktree=str(worktree),
-                            base_commit=base_sha)
+                self.record_meta(job_id, repo=str(repo), worktree=str(worktree),
+                                 base_commit=base_sha)
                 evidence.update({"status": BLOCKED_MODEL, "head_commit": None, "fix_rounds": 0,
                                  "finished_at": utc_now()})
                 return self._finalize(source, key, job_id, BLOCKED_MODEL, evidence, request_id, project_id)
@@ -481,8 +753,8 @@ class P02Bridge:
             evidence["publish"] = self._publish_draft(
                 job_id, obj, worktree, head_sha, base_sha, evidence, changed, test_result, review,
             )
-        self.finish(job_id, status=final_status, repo=str(repo), worktree=str(worktree),
-                    base_commit=base_sha, head_commit=head_sha, fix_rounds=fix_rounds)
+        self.record_meta(job_id, repo=str(repo), worktree=str(worktree),
+                         base_commit=base_sha, head_commit=head_sha, fix_rounds=fix_rounds)
         evidence.update({"status": final_status, "head_commit": head_sha,
                          "fix_rounds": fix_rounds, "finished_at": utc_now()})
         return self._finalize(source, key, job_id, final_status, evidence, request_id, project_id,
@@ -764,13 +1036,34 @@ class P02Bridge:
             "report_path": f"reports/{key}.report.md",
             "created_at": evidence.get("started_at"), "finished_at": utc_now(),
         }
-        atomic_text(self.receipts / f"{key}.receipt.json", dump_json(receipt))
-        atomic_text(self.reports / f"{key}.report.json", dump_json(evidence))
-        atomic_text(self.reports / f"{key}.report.md", self.render_report(evidence, receipt, review))
-        # P05-A：任务结束后先做一次只读实时查询，再刷新索引（两者都是旁路，失败不影响任务结论）。
+        review_payload = self.review_payload(review)
+        artifacts = self.build_artifacts(key, evidence, receipt, review)
+        # 1) Journal 先落盘：此后任何一步崩溃，都能在重启后重放，不必再跑 Codex。
+        journal = self.write_journal(
+            job_id=job_id, key=key, request_id=request_id, project_id=project_id,
+            status=status, source_name=source.name, evidence=evidence,
+            receipt=receipt, artifacts=artifacts, review_payload=review_payload)
+        try:
+            # 2) DB 进入 FINALIZING（不写 finished_at，避免提前显示完成）
+            self.begin_finalizing(job_id)
+            # 3) 交付物（文本取自 Journal，保证与恢复结果逐字节一致）
+            self._materialize(key, artifacts)
+            # 4) 归档 inbox 任务文件（幂等）
+            self._archive_source(source)
+            # 5) 终端状态：此时报告与归档都已就绪，DB 才敢说完成
+            self.finish(job_id, status=status)
+        except Exception as exc:  # noqa: BLE001 - 保留 Journal，交恢复流程
+            raise FinalizeError(f"{type(exc).__name__}: {exc}") from exc
+
+        # 6) 收尾：删除 Journal（此后该任务不再需要重放）
+        try:
+            journal.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[{ERROR}] 清理 Journal 失败 {journal.name}: {exc}", flush=True)
+
+        # P05-A：实时查询与索引都是旁路，失败不影响任务结论
         self._refresh_realtime(request_id, evidence.get("publish") or {})
         status_index.refresh(self.root)
-        shutil.move(str(source), str(self.archive / f"{source.name}.{uuid.uuid4().hex[:8]}"))
         print(f"[{status}] {key} => {job_id}; fixes={fix_rounds}; head={head_sha}", flush=True)
         return status
 
@@ -901,10 +1194,18 @@ def main() -> None:
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--probe-sandbox", action="store_true", help="实测 Codex 是否能越界读写")
     parser.add_argument("--cleanup-plan", action="store_true", help="列出 worktree 回收计划（不删除）")
+    parser.add_argument("--recover", action="store_true",
+                        help="扫描最终化 Journal 并与数据库对账（不执行 Codex、不发布 PR）")
     parser.add_argument("--codex-cmd", default=None)
     args = parser.parse_args()
 
     cmd = [args.codex_cmd] if args.codex_cmd else None
+    if args.recover:
+        # 恢复只做本地重放：补报告、补归档、推进状态。整条路径不引用 codex 与
+        # publisher，所以既不能借它执行开发，也不构成对 SS-V01-001 门禁的绕过。
+        bridge = P02Bridge(args.root, codex_cmd=cmd)
+        print(json.dumps(bridge.recover_finalizing(), ensure_ascii=False, indent=2), flush=True)
+        return
     if args.selfcheck:
         security.guard_or_exit(args.root, "selfcheck")
     elif args.probe_sandbox:
