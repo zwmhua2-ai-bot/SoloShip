@@ -12,9 +12,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bridge"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import codex_adapter as codex  # noqa: E402
 import p01_bridge as bridge_mod  # noqa: E402
+import policy_fixture as fx  # noqa: E402
 
 FAKE_CODEX = str(ROOT / "tests" / "fake_codex.py")
 
@@ -92,6 +94,8 @@ class P01BridgeTests(unittest.TestCase):
                 "isolation_claim": "NONE",
             }
         }), encoding="utf-8")
+        # SS-V01-003：测试命令必须由可信配置授权，夹具显式登记（不依赖内置兜底）。
+        fx.ensure_policy(self.tmp)
         self.bridge = bridge_mod.P01Bridge(self.tmp, codex_cmd=[sys.executable, FAKE_CODEX])
 
     def tearDown(self):

@@ -34,6 +34,7 @@ import p02_support as support  # noqa: E402
 import reviewer as reviewer_mod  # noqa: E402
 import security  # noqa: E402
 import status_index  # noqa: E402
+import test_policy  # noqa: E402
 from p00_bridge import atomic_text, dump_json, utc_now  # noqa: E402
 from p01_bridge import build_prompt, validate_p01_task  # noqa: E402
 
@@ -61,13 +62,14 @@ FINALIZING = "P02_FINALIZING"      # 最终化进行中：DB 可见、证据尚�
 NEEDS_HUMAN = "P02_NEEDS_HUMAN"    # 无法安全恢复：明确交人工，绝不假装成功
 ERROR = "P02_ERROR"                # 未预期的执行异常（与 BUSY 严格区分）
 FINALIZE_ERROR = "P02_FINALIZE_ERROR"   # 最终化阶段的故障（报告/归档/状态写入）
+BLOCKED_TEST_COMMAND = "P02_BLOCKED_TEST_COMMAND"  # 测试命令未获可信配置授权（不启动进程）
 JOURNAL_SCHEMA = "soloship.p02.finalizing/v1"
 
 # 进入这些状态即视为已有终态结论，恢复流程只核对、不改写
 TERMINAL_STATUSES = {
     READY, BLOCKED_REVIEW, BLOCKED_REVIEW_INVALID, BLOCKED_TESTS, BLOCKED_LIMIT,
     BLOCKED_TAMPER, BLOCKED_PATH, BLOCKED_CODEX, BLOCKED_TIMEOUT, BLOCKED_CLI,
-    BLOCKED_AUTH, BLOCKED_MODEL, DUPLICATE, REJECTED, NEEDS_HUMAN,
+    BLOCKED_AUTH, BLOCKED_MODEL, BLOCKED_TEST_COMMAND, DUPLICATE, REJECTED, NEEDS_HUMAN,
 }
 
 
@@ -625,15 +627,29 @@ class P02Bridge:
 
     # ------------------------------------------------------------- validate
     def run_tests(self, cmd: list[str], cwd: Path, timeout_s: int) -> dict:
+        # SS-V01-003：测试执行的唯一入口。命令必须重新过可信策略，
+        # 未获授权时**不启动任何进程**，只返回带原因的拒绝结果。
+        allowed, exec_cmd, reason, source = test_policy.resolve(self.root, cmd)
+        if not allowed:
+            print(f"[{BLOCKED_TEST_COMMAND}] 拒绝测试命令: {reason}", flush=True)
+            return {
+                "command": list(cmd) if isinstance(cmd, (list, tuple)) else [],
+                "exit_code": None,
+                "timed_out": False,
+                "policy_blocked": reason,
+                "policy_source": source,
+                "stdout_tail": "",
+                "stderr_tail": f"测试命令被拒绝: {reason}",
+            }
         try:
-            proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+            proc = subprocess.run(exec_cmd, cwd=str(cwd), capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=timeout_s,
                                   stdin=subprocess.DEVNULL, env=support.sanitized_env())
         except subprocess.TimeoutExpired:
-            return {"command": cmd, "exit_code": None, "timed_out": True,
+            return {"command": exec_cmd, "exit_code": None, "timed_out": True,
                     "stdout_tail": "", "stderr_tail": f"测试超过 {timeout_s}s"}
         return {
-            "command": cmd,
+            "command": exec_cmd,
             "exit_code": proc.returncode,
             "timed_out": False,
             "stdout_tail": "\n".join(proc.stdout.strip().splitlines()[-40:]),
@@ -755,6 +771,21 @@ class P02Bridge:
             evidence["evidence_status"]["sandbox"] = (
                 f"UNAVAILABLE_ENFORCEMENT: {self.sandbox_status}（-s {sandbox} 在本机不限制文件系统）"
             )
+
+        # SS-V01-003：受理阶段的校验结论不可直接信任（长驻 Supervisor 期间配置可能被收紧），
+        # 因此在创建 worktree、调用 Codex 之前再判一次。未获授权 → 立即以明确状态收尾，
+        # 不启动任何测试进程，也不产生"测试通过"的结论。
+        cmd_ok, _exec_cmd, cmd_reason, cmd_source = test_policy.resolve(self.root, test_cmd)
+        evidence["test_command_policy"] = {
+            "allowed": cmd_ok, "source": cmd_source, "reason": cmd_reason,
+            "requested": test_cmd,
+        }
+        if not cmd_ok:
+            evidence["evidence_status"]["tests"] = f"REJECTED: {cmd_reason}"
+            evidence.update({"status": BLOCKED_TEST_COMMAND, "head_commit": None, "fix_rounds": 0})
+            print(f"[{BLOCKED_TEST_COMMAND}] {key}: {cmd_reason}", flush=True)
+            return self._finalize(source, key, job_id, BLOCKED_TEST_COMMAND, evidence,
+                                  request_id, project_id)
 
         worktree = self.worktrees / request_id
         try:
@@ -976,6 +1007,12 @@ class P02Bridge:
         evidence["changed_paths"] = changed
         self.update_round(job_id, round_no, kind, head_sha=head_sha, diff_sha=diff_sha,
                           test_exit=test_result.get("exit_code"))
+        if test_result.get("policy_blocked"):
+            # 命令未获授权：不是"测试失败"，也不进入修复轮次。
+            evidence["evidence_status"]["tests"] = f"REJECTED: {test_result['policy_blocked']}"
+            self.record_round(job_id, round_no, kind,
+                              note=f"test command rejected: {test_result['policy_blocked']}")
+            return BLOCKED_TEST_COMMAND, head_sha, diff_text, changed, test_result, None
         if test_result["exit_code"] != 0:
             return BLOCKED_TESTS, head_sha, diff_text, changed, test_result, None
 

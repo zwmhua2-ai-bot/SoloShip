@@ -22,6 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bridge"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+import policy_fixture as fx  # noqa: E402
 
 import p00_bridge  # noqa: E402
 import p01_bridge  # noqa: E402
@@ -124,7 +127,10 @@ class GateBase(unittest.TestCase):
                 "approved_repos": list(repos),
                 "approved_absolute_repos": [],
                 "isolation_claim": "NONE",
-            }
+            },
+            # SS-V01-003：命令授权与执行门禁相互独立；缺策略会让校验先失败，
+            # 掩盖本文件要验证的门禁行为，因此这里显式登记。
+            "test_command_policy": fx.test_command_policy(),
         }), encoding="utf-8")
 
     def submit(self, directory: Path, task: dict) -> Path:
@@ -144,6 +150,9 @@ class BlockedGateTests(GateBase):
 
     def setUp(self):
         super().setUp()
+        # SS-V01-003：即使处于 BLOCKED，也要写入合法的测试命令策略段。
+        # 否则校验阶段会先因"策略缺失"拒绝，掩盖本类用例要验证的门禁拒绝路径。
+        self.write_config(enabled=False, risk_accepted=False)
         security.record(self.root, security.BLOCKED, "测试：沙箱不可用")
         self.assertEqual(security.execution_mode(self.root), "BLOCKED")
 

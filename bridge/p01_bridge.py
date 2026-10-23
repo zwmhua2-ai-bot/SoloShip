@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -29,7 +30,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import codex_adapter as codex  # noqa: E402
+import env_guard  # noqa: E402
 import security  # noqa: E402
+import test_policy  # noqa: E402
 from p00_bridge import (  # noqa: E402
     TASK_KEYS as P00_TASK_KEYS,
     atomic_text,
@@ -41,7 +44,6 @@ from p00_bridge import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 P01_EXTRA_KEYS = {"workspace", "verify", "codex"}
-ALLOWED_TEST_RUNNERS = {"py", "python", "python3", "python.exe", "py.exe"}
 MAX_PATCH_BYTES = 400_000
 
 STATUS_CODEX_OK = "P01_CODEX_OK"
@@ -53,6 +55,7 @@ STATUS_TIMEOUT = "P01_CODEX_TIMEOUT"
 STATUS_CLI_MISSING = "P01_CLI_MISSING"
 STATUS_AUTH_FAILED = "P01_AUTH_FAILED"
 STATUS_REJECTED = "P01_TASK_REJECTED"
+STATUS_BLOCKED_TEST_COMMAND = "P01_BLOCKED_TEST_COMMAND"
 
 
 # ---------------------------------------------------------------- validation
@@ -113,8 +116,11 @@ def validate_p01_task(obj: Any, root: Path) -> list[str]:
         cmd = verify.get("test_command")
         if not isinstance(cmd, list) or not cmd or any(not nonempty_string(part) for part in cmd):
             errors.append("verify.test_command 必须是非空字符串数组")
-        elif Path(str(cmd[0])).name.lower() not in ALLOWED_TEST_RUNNERS and not Path(str(cmd[0])).exists():
-            errors.append("verify.test_command 只允许 python 解释器")
+        else:
+            # SS-V01-003：命令本身由 Bridge 的可信配置授权，任务 JSON 只能"引用"。
+            allowed, _argv, reason, _source = test_policy.resolve(root, cmd)
+            if not allowed:
+                errors.append(f"verify.test_command 未通过可信命令策略: {reason}")
         timeout = verify.get("timeout_seconds", 300)
         if not isinstance(timeout, int) or not 10 <= timeout <= 3600:
             errors.append("verify.timeout_seconds 必须是 10-3600 的整数")
@@ -425,19 +431,32 @@ class P01Bridge:
                         "codex_last_message": "OK" if run and run.last_message.strip() else "EMPTY",
                         "codex_events": f"OK ({len(run.events)} events)" if run and run.events else "EMPTY",
                     }
-                    proc = subprocess.run(
-                        test_cmd, cwd=str(worktree), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=test_timeout,
-                        stdin=subprocess.DEVNULL,
-                    )
-                    test_result = {
-                        "command": test_cmd,
-                        "exit_code": proc.returncode,
-                        "stdout_tail": "\n".join(proc.stdout.strip().splitlines()[-25:]),
-                        "stderr_tail": "\n".join(proc.stderr.strip().splitlines()[-10:]),
+                    # SS-V01-003：执行阶段再判一次。受理阶段的结论不能被直接信任
+                    # （长驻进程运行期间配置可能被收紧），且必须拦在进程启动之前。
+                    cmd_ok, exec_cmd, cmd_reason, cmd_source = test_policy.resolve(self.root, test_cmd)
+                    evidence["test_command_policy"] = {
+                        "allowed": cmd_ok, "source": cmd_source, "reason": cmd_reason,
+                        "requested": test_cmd,
                     }
-                    evidence["tests"] = test_result
-                    status = STATUS_CODEX_OK if proc.returncode == 0 else STATUS_TESTS_FAILED
+                    if not cmd_ok:
+                        evidence["evidence_status"]["tests"] = f"REJECTED: {cmd_reason}"
+                        status = STATUS_BLOCKED_TEST_COMMAND
+                        print(f"[{STATUS_BLOCKED_TEST_COMMAND}] {key}: {cmd_reason}", flush=True)
+                    else:
+                        proc = subprocess.run(
+                            exec_cmd, cwd=str(worktree), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=test_timeout,
+                            stdin=subprocess.DEVNULL,
+                            env=env_guard.scrub_secrets(os.environ)[0],
+                        )
+                        test_result = {
+                            "command": exec_cmd,
+                            "exit_code": proc.returncode,
+                            "stdout_tail": "\n".join(proc.stdout.strip().splitlines()[-25:]),
+                            "stderr_tail": "\n".join(proc.stderr.strip().splitlines()[-10:]),
+                        }
+                        evidence["tests"] = test_result
+                        status = STATUS_CODEX_OK if proc.returncode == 0 else STATUS_TESTS_FAILED
 
         self.finish(
             job_id,

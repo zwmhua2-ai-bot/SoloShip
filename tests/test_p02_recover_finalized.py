@@ -16,8 +16,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bridge"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import p02_bridge as p02  # noqa: E402
+import policy_fixture as fx  # noqa: E402
 
 FAKE_CODEX = str(ROOT / "tests" / "fake_codex.py")
 
@@ -80,6 +82,8 @@ class FinalizedRecoveryBase(unittest.TestCase):
                 "isolation_claim": "NONE",
             }
         }), encoding="utf-8")
+        # SS-V01-003：测试命令必须由可信配置授权
+        fx.ensure_policy(self.root)
         init_repo(self.root / "demo" / "soloship-demo")
         env = mock.patch.dict(os.environ, {"FAKE_BUILD_MODE": "strict",
                                            "FAKE_REVIEW_MODE": "approve"})

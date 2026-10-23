@@ -82,10 +82,24 @@ $PY bridge\p03d_guard.py precheck-inbox --help
 
 **不要**为了"让任务跑起来"去打开 `github.enabled` 或临时开启沙箱豁免——那是安全决定，需人工授权。
 
+测试命令授权（SS-V01-003）自查。授权清单在 `config/bridge.json` →
+`test_command_policy.approved`，任务 JSON 只能引用：
+
+```powershell
+# 看当前允许哪些测试命令
+$PY -c "import json;c=json.load(open('config/bridge.json',encoding='utf-8'));print(c['test_command_policy']['approved'])"
+
+# 用真实判定逻辑试一条命令（把列表换成待验证的 argv）
+$PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(test_policy.resolve(pathlib.Path('.'),['py','-3','-m','unittest','discover','-s','tests','-v']))"
+```
+
+返回 `(True, argv, '', 'config')` 表示放行；第三项非空即为拒绝原因。
+**策略段缺失 / 非法 / `approved` 为空 → 一律拒绝**，这是设计意图，不要用"临时删掉校验"来绕过。
+
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 289 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 315 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
@@ -127,6 +141,8 @@ git -C $REPO diff --stat
 | `UNFINISHED_CLAIM` | 上次认领未收尾 | 按 P05-C 策略只登记不重跑，需人工处理 |
 | `[P02_FINALIZE_ERROR]` | 交付物/归档/状态写入失败 | Journal 已保留，跑 `--recover` |
 | `P02_NEEDS_HUMAN` + `.needs_human.json` | 证据冲突或不足 | 人工核对 `.control/p02/finalizing/` 与报告，不要伪造 |
+| `P02_BLOCKED_TEST_COMMAND` / `P01_BLOCKED_TEST_COMMAND` | 测试命令未获可信配置授权 | 看报告里的 `test_command_policy.reason`；要放行必须改 `config/bridge.json` 的 `approved`（需人工授权），**不要**改任务 JSON 或删校验 |
+| 所有任务都被拒，理由是"策略缺失" | `config/bridge.json` 缺 `test_command_policy` 段 | 迁移/新建环境后忘记同步配置；补上 `approved` 段即可，不要回退代码 |
 | `PermissionError [WinError 5] ... state.json` | 读写与原子替换撞车 | 已由 `_write_json` 退避重试处理；若仍出现，检查是否有外部工具锁文件 |
 | 日志中文乱码 | 历史 GBK 段落 | `supervisor-boot.log` 前若干字节是旧记录，新写入均为 UTF-8；不要就地重写历史 |
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |

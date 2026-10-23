@@ -102,5 +102,20 @@
     "allow_force_push": false,
     "require_env_token": true,
     "token_env": "GH_TOKEN"
+  },
+  "test_command_policy": {
+    "schema": "soloship.test_command_policy/v1",
+    "note": "SS-V01-003：任务 JSON 的 verify.test_command 只能引用这里的条目，不能自行扩大。缺失/非法/空列表一律拒绝执行测试（fail closed），不回退内置白名单。",
+    "approved": [
+      {
+        "argv": ["-m", "unittest", "discover", "-s", "tests"],
+        "note": "项目单元测试（静默）"
+      },
+      {
+        "argv": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+        "note": "项目单元测试（详细）"
+      }
+    ],
+    "trusted_interpreter_dirs": []
   }
 }

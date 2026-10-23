@@ -79,7 +79,7 @@ python -m unittest discover -s tests
 ```
 
 - **不要加 `-t .`**：`tests/` 没有 `__init__.py`，会报 `Start directory is not importable`。
-- 基线：`289` 项全绿（2026-10-24 01:14 复核）。新增任务不得让既有用例变红。
+- 基线：`315` 项全绿（2026-10-24 02:35，SS-V01-003 交付时实测）。新增任务不得让既有用例变红。
 - 涉及 Codex 的用例一律用 `tests/fake_codex.py`，**不执行真实开发**。
 - 断言要能失败：先证明缺陷存在（测试红），再改到绿。
 
@@ -102,6 +102,16 @@ python -m unittest discover -s tests
 因此：**系统当前不具备合并与强制推送能力**——不是因为 `allow_merge=false` 被运行时校验，
 而是因为对应代码路径不存在。新增任何远端写能力前，必须先在本表补上运行时检查位置，
 否则视为规范被破坏。
+
+**测试命令授权（SS-V01-003）**：`verify.test_command` 是**请求**，不是授权。
+
+- 唯一判定入口：`bridge/test_policy.py::resolve`。调用点四处——P01 校验（`validate_p01_task`）、P01 执行前、P02 `_run_job` 执行前、P02 `run_tests`。Supervisor 不另写规则，经 `process_one` 继承同一判定。
+- 授权清单由 Bridge 管理：`config/bridge.json` → `test_command_policy.approved`。任务 JSON 不能增删。
+- 配置缺失、不可读、结构非法或 `approved` 为空 → **全部拒绝**，不回退任何内置白名单。
+- 解释器必须解析到受信任目录（当前解释器目录 / base_prefix / PATH 上可解析的解释器 / `trusted_interpreter_dirs`）；"某个绝对路径存在"不构成授权。
+- 一律拒绝：`-c` 内联代码、未获批的 `-m` 模块、非 Python 可执行文件、含 `..` 的路径、与 `approved` 不完全相等的参数组合。
+- 拒绝语义：不启动进程、不产生"测试通过"、不进修复轮次、不归类为 `P02_BUSY`；状态为 `P01_BLOCKED_TEST_COMMAND` / `P02_BLOCKED_TEST_COMMAND`，原因写入报告与 Journal。
+- **允许执行项目测试 ≠ 测试代码有隔离**。本条不改变沙箱声明。
 
 沙箱状态必须如实呈现：`SANDBOX_BLOCKED` 就是未隔离，`WINDOWS_TEST_MODE` 只是"显式授权的本机测试模式"，**不得**描述为沙箱隔离。
 

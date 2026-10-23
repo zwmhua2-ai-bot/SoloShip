@@ -33,7 +33,8 @@
 | （迁移） | 仓库迁至 E 盘并修正路径依赖 | 完成 | `b754467` |
 | SS-DOC-001 | AI 开发交接与过程记录体系 | 完成 | `29401af` |
 | SS-DOC-002 | 交接文档一致性修正（Git/安全/worktree/缺口） | 完成 | 见交付报告 |
-| SS-V01-003 / P05-C | — | 未开工，未获批 | — |
+| SS-V01-003 | 测试命令授权加固（`test_command_policy`） | 完成 | 见交付报告 |
+| P05-C | 未收尾任务恢复 / 并行扩展 / `start` 存活复核 | 未开工，未获批 | — |
 
 ## 3. 测试基线演进
 
@@ -45,9 +46,10 @@
 | 日志编码修复 | 262 |
 | SS-V01-001 | 273 |
 | SS-V01-002 | 285 |
-| SS-V01-002-R1 | **289**（当前） |
+| SS-V01-002-R1 | 289 |
+| SS-V01-003 | **315**（当前） |
 
-当前基线：`289 OK`（2026-10-24 01:14，`python -m unittest discover -s tests`）。
+当前基线：`315 OK`（2026-10-24 02:35，`python -m unittest discover -s tests`，SS-V01-003 实测）。
 
 ## 4. 报告索引
 
@@ -85,6 +87,8 @@
 - `github.enabled=false`：发布被 `github_publisher.publish()` 短路，不会发起远端写操作。
   自动合并与强制推送**不是被开关拦住，而是系统没有实现**
   （`allow_merge` / `allow_force_push` 无任何代码读取，详见 `AGENTS.md` §7）。
+- 测试命令自 SS-V01-003 起由 `config/bridge.json` 的 `test_command_policy.approved` 授权：
+  任务 JSON 只能引用，不能扩权；策略缺失或非法一律拒绝执行测试（fail closed）。
 - 流水线侧提交位于本地 `main`（HEAD `29401af`，核实 2026-10-24 01:53），
   比本地 `origin/main` 引用（`24d0337`）领先 6 个提交，**未推送**。
   远端在此期间是否有新提交**未实时确认**，按 UNKNOWN 处理；分支细节见 `docs/AI_HANDOFF.md` §1。

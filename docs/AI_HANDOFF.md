@@ -52,6 +52,7 @@
 | 仓库迁移至 E 盘 | 完成 | `b754467` |
 | SS-DOC-001 交接文档体系 | 完成 | `29401af` |
 | SS-DOC-002 交接文档一致性修正 | 完成 | 见交付报告 |
+| SS-V01-003 测试命令授权加固 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
@@ -73,10 +74,11 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 289 tests in 219.229s — OK`（**历史记录，非当前会话执行**） |
-| 时间 | 2026-10-24 01:14:44（本地） |
-| 证据来源 | 本机实际执行输出；SS-DOC-001 编写前最后一次全量运行 |
-| 之后是否复跑 | SS-DOC-001-V1（只读评估）与 SS-DOC-002（文档修改）均**未**执行测试；接手后须自行复跑 |
+| 结果 | `Ran 315 tests in 290.468s — OK`（SS-V01-003 交付前实测，`-v` 全量） |
+| 时间 | 2026-10-24 02:35（本地） |
+| 证据来源 | 本机实际执行输出（`PYTHONDONTWRITEBYTECODE=1`） |
+| 上一基线 | `289 OK`（2026-10-24 01:14，SS-DOC-001 期间），新增 26 项策略回归后升为 315 |
+| 之后是否复跑 | 无。接手后须自行复跑；不得把上面这行当成"我刚跑过" |
 
 ## 6. 运行状态（必须重新核实）
 
@@ -103,6 +105,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | `require_env_token` / `token_env` | `true` / `GH_TOKEN`（环境变量，配置内无 Token） |
 | `windows_test_mode.enabled` | `true`（`risk_accepted=true`） |
 | `isolation_claim` | `NONE`（明示无操作系统级隔离） |
+| `test_command_policy.approved` | 仅 2 条 `-m unittest discover -s tests`（含 `-v`）；缺失/非法即拒绝执行测试 |
 
 > **上表是"配置声明"，不等于"运行时检查"。**
 > 真实生效方式见 `AGENTS.md` §7 的开关表：`github.enabled` 与 `require_env_token`
@@ -119,6 +122,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 6. **文档中残留旧路径**：`docs/P05B-*.md` 与 `demo/soloship-demo/README.md` 属历史记录，保留原文，不作为操作依据。
 7. **Demo 仓库四条本地分支**（`p01/*`、`p02/*` 共 4 条）未推送，功能已被 PR #1 覆盖，仅作过程证据。
 8. **孤立 worktree 目录**（核实 2026-10-24 01:53）：`.git/worktrees` 不存在，`git worktree list` 只有主工作区，但 `.worktrees/` 下仍有 6 个目录。**不要复用、不要删除、不要手工注册**，需建 worktree 时由 P02 重新创建。详见 `docs/DEVLOG.md` 迁移条目的「当前状态」段。
+9. **测试命令策略是"缺配置即拒绝"**（SS-V01-003）：未写入 `test_command_policy.approved` 的部署/临时根，一律拒绝执行项目测试，任务会以 `P01_TASK_REJECTED` / `P02_TASK_REJECTED`（或执行阶段 `*_BLOCKED_TEST_COMMAND`）收尾。这是设计意图，不是故障；迁移或新建环境时必须同步该段配置。
 
 ## 9. 需要人工确认的事项
 
@@ -132,7 +136,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 ```bash
 cd /e/Documents/AI-Developer/repositories/SoloShip      # 或 Windows 路径
 git rev-parse HEAD && git status --short                # 核对版本与工作区
-python -m unittest discover -s tests                    # 确认 289 项基线
+python -m unittest discover -s tests                    # 确认 315 项基线
 python bridge/supervisor.py status --root .             # 重新核实运行态
 ```
 

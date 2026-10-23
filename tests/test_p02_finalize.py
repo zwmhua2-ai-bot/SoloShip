@@ -17,9 +17,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bridge"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import github_publisher  # noqa: E402
 import p02_bridge as p02  # noqa: E402
+import policy_fixture as fx  # noqa: E402
 
 FAKE_CODEX = str(ROOT / "tests" / "fake_codex.py")
 
@@ -82,6 +84,8 @@ class FinalizeBase(unittest.TestCase):
                 "isolation_claim": "NONE",
             }
         }), encoding="utf-8")
+        # SS-V01-003：测试命令必须由可信配置授权
+        fx.ensure_policy(self.root)
         init_repo(self.root / "demo" / "soloship-demo")
         self._bridges = []
         # 让 Fake Codex 走「写入 feature.py + 审查通过」的确定性路径

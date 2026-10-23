@@ -5,7 +5,37 @@
 
 ---
 
-## SS-DOC-002 · 交接文档一致性修正（本条目）
+## SS-V01-003 · 测试命令授权加固（本条目）
+
+- **提交**：见交付报告
+- **原因**：`validate_p01_task` 只用 `Path(cmd[0]).name not in RUNNERS **and** not Path(cmd[0]).exists()`
+  判断首元素，参数完全不校验。实测（旧版文件从 `git show HEAD:bridge/p01_bridge.py` 加载后运行）：
+  `["python","-c","print('not tests')"]`、`["python","-m","http.server"]`、
+  `["C:\\Windows\\System32\\notepad.exe"]` **全部被判为合规**；三者在旧逻辑下无任何错误项。
+- **决策**：
+  1. 新增 `bridge/test_policy.py` 作为唯一判定入口：解释器必须解析到**受信任目录**
+     （当前解释器目录 / `base_prefix` / PATH 上可解析的解释器 / 配置追加项），
+     去掉解释器后的 argv 必须与 `approved` 中某条**完整相等**。
+  2. 授权清单进 `config/bridge.json` → `test_command_policy.approved`（2 条）；
+     任务 JSON 只能引用。**配置缺失/非法/空列表一律拒绝**，不回退内置白名单（技术决策：方案 B）。
+  3. 执行层复检，不只信受理阶段：P01 执行前、P02 `_run_job`（建 worktree/调 Codex 之前）、
+     P02 `run_tests` 各判一次。拒绝时**不启动进程**、不产出"测试通过"、不进修复轮次、
+     不归类为 `P02_BUSY`；新状态 `P01_BLOCKED_TEST_COMMAND` / `P02_BLOCKED_TEST_COMMAND`
+     （后者已加入 `TERMINAL_STATUSES`，恢复流程按终态处理）。
+  4. `py` 启动器允许紧随一个 `-3` / `-3.x` 版本参数，其余参数按原样匹配——
+     历史任务 `py -3 -m unittest discover -s tests [-v]` 继续有效。
+  5. P01 的测试子进程改用 `env_guard.scrub_secrets(os.environ)`（P02 早已如此）。
+- **测试**：新增 `tests/test_test_command_policy.py`（26 项，AC-01..AC-07）+ `tests/policy_fixture.py`
+  （共享夹具）；7 份既有夹具显式登记策略段。全量 `315 OK`（2026-10-24 02:35，290.468s）。
+  改前 39 项红（夹具缺策略 + 门禁拒绝原因被校验抢先），逐项修复后转绿，未下调任何断言。
+- **兼容性**：任务 JSON 结构不变；历史任务的 `py -3 ... discover -s tests` 全部通过。
+  代价：**未写策略段的部署将拒绝执行测试**（方案 B 的已知代价，已记入 `AI_HANDOFF.md` §8）。
+- **遗留**：`approved` 目前只覆盖 unittest discover；项目若换 `pytest`，需人工改配置。
+  解释器可信目录按"目录"而非"文件哈希"判定，仍依赖该目录本身不被普通用户写入。
+
+---
+
+## SS-DOC-002 · 交接文档一致性修正
 
 - **提交**：见交付报告（本文件随该提交一起入库，因此不写自身 SHA）
 - **原因**：SS-DOC-001-V1 冷启动评估发现 4 类文档与实际状态不一致——
@@ -131,4 +161,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315）来自各阶段报告与提交信息，属**可核实**范围。
