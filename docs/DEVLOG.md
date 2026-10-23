@@ -5,7 +5,47 @@
 
 ---
 
-## SS-V01-004 · Reviewer Candidate SHA 严格绑定（本条目）
+## SS-V01-005 · GitHub Publisher 发布门禁与幂等性加固（本条目）
+
+- **提交**：见交付报告
+- **基线**：`0db54fc`
+- **原因**：核对 `github_publisher.py` 发现 5 处不确定性：
+  1. `_remote_branch_sha()` 返回 `None`（读取失败/分支不存在）时，base 校验被**跳过**；
+  2. `expected_base_sha` 为 `None` 时完全不校验远端 base；
+  3. `_find_pr()` 只取"第一条带 url 的记录"，不校验 repo / base / head / state / isDraft / Head SHA，
+     多条匹配时静默取第一条；
+  4. 已 CLOSED / MERGED / 非 Draft 的 PR 会被直接复用；
+  5. 推送与创建 PR 的 `subprocess` 调用没有超时对账，超时会直接冒泡成
+     `PUBLISH_FAILED_EXCEPTION`（"超时"被当成"没创建"）。
+- **决策**：
+  1. **base 必须可读且合法**：读不到、空值、非 40/64 位十六进制 → `BLOCKED_REMOTE`；
+     与 `expected_base_sha` 不一致 → `BLOCKED_BASE_MOVED`；推送后、建 PR 前再读一次，
+     期间变化 → `BLOCKED_BASE_MOVED`。
+  2. **PR 查询前移到任何写操作之前**，并改为 `_inspect_pr()` 严格核对：
+     查询失败 / 非 JSON / 含非对象 / 缺字段 / 多条匹配（歧义）→ `BLOCKED_PR_STATE`；
+     `MERGED` / `CLOSED` / 非 `OPEN` / 非 Draft → `BLOCKED_PR_STATE`（不自动复用、不重开、不建替代）；
+     Head 分支或 Base 分支不符 → `BLOCKED_PR_STATE`；
+     Head SHA 与 candidate 不一致 → `BLOCKED_BRANCH_CONFLICT`。
+     只有 `OPEN + Draft + 分支与 SHA 全一致` 才复用，且复用时**不推送**。
+  3. **不确定结果一律先对账**：推送超时 → 读远端 SHA，落地才继续，否则 `FAILED_PUSH` 且不重推；
+     建 PR 超时 → 重新严格查询，命中则 `PR_RECOVERED`，未命中则 `FAILED_PR` 并声明"需人工对账"。
+  4. `gh pr create` 返回 "already exists" 时也必须重新严格核对才按已发布处理。
+  5. 未实现的能力保持未实现：源码中无 `--force` / `pr merge` / deploy 路径（有源码级回归守护）。
+- **测试**：新增 `tests/test_p03_gate.py` 28 项（AC-01..AC-14）；
+  抽取 `tests/p03_fixture.py` 共享夹具（原 `test_p03.py` 的内联 setUp 迁入，断言未改）；
+  `fake_gh.py` 增加 `listfail` / `badjson` 模式，`pr create` 改为记录真实 candidate 与分支名。
+  `test_p03.py::test_push_failure` 的构造方式随之调整（原写法现在会先被 base 校验拦下），
+  改为"远端可达、仅推送被拒"，**未下调任何断言**。全量 `374 OK`（2026-10-24 03:43，416.465s）。
+- **兼容性**：`publish()` 签名与 P02 调用方式未变；`github.enabled=false` 时仍为 `SKIPPED_DISABLED`；
+  正常 Draft PR 流程（推送 → 建 PR → 复用）不变。行为变化：远端状态不可读/不一致时**提前拒绝**，
+  而不是带着不确定性继续。
+- **遗留**：PR 查询只覆盖 head 分支；跨 fork 的 head 归属未单独校验（依赖 `--repo` + headRefName）；
+  `--state all` 仍一次取全部匹配，歧义时交人工；发布动作本身仍需人工授权后才可能真实发生
+  （当前 `github.enabled=false`）。
+
+---
+
+## SS-V01-004 · Reviewer Candidate SHA 严格绑定
 
 - **提交**：见交付报告
 - **基线**：`66cb2ef`
@@ -225,4 +265,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374）来自各阶段报告与提交信息，属**可核实**范围。

@@ -99,7 +99,7 @@ $PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 346 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 374 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
@@ -145,6 +145,9 @@ git -C $REPO diff --stat
 | 所有任务都被拒，理由是"策略缺失" | `config/bridge.json` 缺 `test_command_policy` 段 | 迁移/新建环境后忘记同步配置；补上 `approved` 段即可，不要回退代码 |
 | 拒绝理由含"解释器所在目录不受信任" | 解释器来自 PATH 靠前的用户目录，或另一套未登记安装 | 这是 PATH 劫持防护（SS-V01-003-R1）。确认该解释器可信后，把它的目录写进 `trusted_interpreter_dirs`；不要退回去信任 PATH |
 | `P02_BLOCKED_REVIEW_INVALID`，报告里出现"审查版本不一致/长度非法/非法字符" | Reviewer 回传的 candidate_sha 不是完整一致的对象 ID（前缀、截断、加后缀、其他 SHA、空值） | SS-V01-004 的严格绑定：只有完整一致 SHA 才算数。检查 `reviews/<key>/review.last.json`；若确属模型偶发，重跑任务即可，不要放宽校验 |
+| `PUBLISH_BLOCKED_REMOTE`（详情含"无法可靠读取远端 base"） | `ls-remote` 失败、目标分支不存在或返回值不是合法对象 ID | SS-V01-005：读不到 base 一律拒绝。确认远端可达、分支存在后重试；不要为跑通而跳过该校验 |
+| `PUBLISH_BLOCKED_PR_STATE` | 已有 PR 不是 OPEN Draft、分支不符、查询失败/结果不完整/有歧义 | 交人工：核对 `.control/p03/publish/<job_id>.json` 与远端 PR 状态，不要自动重开或另建 PR |
+| `PUBLISH_BLOCKED_BASE_MOVED` | 远端 base 与预期不一致，或发布过程中发生变化 | 重新评估候选是否仍可干净合入；必要时重跑任务 |
 | `PermissionError [WinError 5] ... state.json` | 读写与原子替换撞车 | 已由 `_write_json` 退避重试处理；若仍出现，检查是否有外部工具锁文件 |
 | 日志中文乱码 | 历史 GBK 段落 | `supervisor-boot.log` 前若干字节是旧记录，新写入均为 UTF-8；不要就地重写历史 |
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |

@@ -79,7 +79,7 @@ python -m unittest discover -s tests
 ```
 
 - **不要加 `-t .`**：`tests/` 没有 `__init__.py`，会报 `Start directory is not importable`。
-- 基线：`346` 项全绿（2026-10-24 03:03，SS-V01-004 交付时实测）。新增任务不得让既有用例变红。
+- 基线：`374` 项全绿（2026-10-24 03:43，SS-V01-005 交付时实测）。新增任务不得让既有用例变红。
 - 涉及 Codex 的用例一律用 `tests/fake_codex.py`，**不执行真实开发**。
 - 断言要能失败：先证明缺陷存在（测试红），再改到绿。
 
@@ -90,6 +90,10 @@ python -m unittest discover -s tests
 1. **执行授权**：`security.require_auto_dev()` 在 `P01Bridge.process_one`、`P02Bridge.process_one`、`Supervisor.tick` 三处强制检查。`BLOCKED` 时不得调用 Codex / 审查 / 项目测试。CLI `main()` 里的检查**不足以**覆盖内部调用。
 2. **凭据**：配置内不得出现 Token；发布依赖环境变量 `GH_TOKEN`；子进程环境经 `env_guard.scrub_secrets` 清洗。禁止回退到账号级缓存 Token。
 3. **发布**：`github.enabled=false` 时不得发起任何远端写操作；恢复流程不得调用 publisher。
+   发布门禁（SS-V01-005）：远端 base 必须可读且合法、与预期一致，且在推送后到建 PR 前不得变化；
+   已有 PR 必须为 `OPEN + Draft + 分支与 Head SHA 完全一致` 才复用，其余（CLOSED/MERGED/非 Draft/
+   Head SHA 不一致/查询失败/结果有歧义）一律拒绝；推送或建 PR 超时时必须先重新读取远端对账，
+   不得把超时当成"没有创建"而重建。Publisher 源码中不存在强推、合并、部署路径。
 
 **发布相关开关的真实生效方式**（以当前源码为准，三种性质不能混为一谈）：
 

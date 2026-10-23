@@ -35,7 +35,8 @@
 | SS-DOC-002 | 交接文档一致性修正（Git/安全/worktree/缺口） | 完成 | 见交付报告 |
 | SS-V01-003 | 测试命令授权加固（`test_command_policy`） | 完成 | `dc25135` |
 | SS-V01-003-R1 | 测试解释器可信路径验证（PATH 劫持 / 执行路径一致性） | 完成 | `66cb2ef` |
-| SS-V01-004 | Reviewer Candidate SHA 严格绑定与审查证据校验 | 完成 | 见交付报告 |
+| SS-V01-004 | Reviewer Candidate SHA 严格绑定与审查证据校验 | 完成 | `0db54fc` |
+| SS-V01-005 | GitHub Publisher 发布门禁与幂等性加固 | 完成 | 见交付报告 |
 | P05-C | 未收尾任务恢复 / 并行扩展 / `start` 存活复核 | 未开工，未获批 | — |
 
 ## 3. 测试基线演进
@@ -51,9 +52,10 @@
 | SS-V01-002-R1 | 289 |
 | SS-V01-003 | 315 |
 | SS-V01-003-R1 | 323 |
-| SS-V01-004 | **346**（当前） |
+| SS-V01-004 | 346 |
+| SS-V01-005 | **374**（当前） |
 
-当前基线：`346 OK`（2026-10-24 03:03，`python -m unittest discover -s tests`，SS-V01-004 实测）。
+当前基线：`374 OK`（2026-10-24 03:43，`python -m unittest discover -s tests`，SS-V01-005 实测）。
 
 ## 4. 报告索引
 

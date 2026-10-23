@@ -20,7 +20,7 @@
 
 ```bash
 git rev-parse HEAD && git status --short          # 我在哪个版本、有没有未提交改动
-python -m unittest discover -s tests              # 基线：346 项（注意不要加 -t .）
+python -m unittest discover -s tests              # 基线：374 项（注意不要加 -t .）
 python bridge/supervisor.py status --root .       # 服务是否在跑
 ```
 
@@ -28,7 +28,7 @@ python bridge/supervisor.py status --root .       # 服务是否在跑
 
 ```
 bridge/     流水线实现（Supervisor、P00–P05 各阶段、安全门禁、恢复）
-tests/      回归测试（346 项，Codex 一律用 fake_codex.py）
+tests/      回归测试（374 项，Codex 一律用 fake_codex.py）
 scripts/    启动脚本与登录自启安装
 config/     bridge.json（不含任何 Token）
 docs/       交接、过程、操作手册与阶段报告

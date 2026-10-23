@@ -17,6 +17,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # terminal / intermediate statuses
 SKIPPED_DISABLED = "PUBLISH_SKIPPED_DISABLED"
@@ -25,6 +26,7 @@ BLOCKED_REPO = "PUBLISH_BLOCKED_REPO"
 BLOCKED_REMOTE = "PUBLISH_BLOCKED_REMOTE"
 BLOCKED_BASE_MOVED = "PUBLISH_BLOCKED_BASE_MOVED"
 BLOCKED_BRANCH_CONFLICT = "PUBLISH_BLOCKED_BRANCH_CONFLICT"
+BLOCKED_PR_STATE = "PUBLISH_BLOCKED_PR_STATE"
 FAILED_CLI = "PUBLISH_FAILED_GH_CLI"
 FAILED_AUTH = "PUBLISH_FAILED_AUTH"
 FAILED_PUSH = "PUBLISH_FAILED_PUSH"
@@ -39,6 +41,13 @@ PUSHED = "PUBLISH_PUSHED"
 PR_SUCCESS_STATUSES = (PR_CREATED, PR_EXISTS, PR_RECOVERED)
 
 AUTH_MARKERS = ("not logged in", "authentication", "gh auth login", "http 401", "bad credentials")
+
+_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+
+
+def valid_object_id(value: Any) -> bool:
+    """完整 Git 对象 ID（40=SHA-1 / 64=SHA-256）。"""
+    return isinstance(value, str) and bool(_OBJECT_ID_RE.match(value))
 
 
 def pr_number_from_url(url: str | None) -> int | None:
@@ -187,6 +196,71 @@ class Publisher:
         line = proc.stdout.strip().splitlines()
         return line[0].split()[0] if line else None
 
+    def _base_sha_problem(self, value: str | None) -> str:
+        """远端 base 读取失败 / 空值 / 非法对象 ID → 拒绝（不猜、不默认放行）。"""
+        if not value:
+            return "读取失败（ls-remote 无结果）"
+        if not valid_object_id(value):
+            return f"不是合法的 Git 对象 ID: {value[:32]!r}"
+        return ""
+
+    # ------------------------------------------------------- existing PR
+    PR_REQUIRED_FIELDS = ("number", "url", "state", "isDraft",
+                          "headRefOid", "headRefName", "baseRefName")
+
+    def _inspect_pr(self, repo: str, branch: str, base_branch: str,
+                    candidate_sha: str) -> tuple[dict | None, str, str]:
+        """严格查询是否已有可复用的 PR。
+
+        返回 (pr, 拒绝状态, 拒绝原因)。查询失败、结果不完整、结果有歧义、
+        状态不是 OPEN Draft、Base/Head 分支不符、Head SHA 与 candidate 不一致，
+        都返回拒绝状态——调用方不得在不确定时执行任何写操作。
+        """
+        try:
+            proc = self._gh("pr", "list", "--repo", repo, "--head", branch, "--state", "all",
+                            "--json", ",".join(self.PR_REQUIRED_FIELDS))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, BLOCKED_PR_STATE, f"PR 查询失败: {type(exc).__name__}"
+        if proc.returncode != 0:
+            return None, BLOCKED_PR_STATE, f"PR 查询失败: {(proc.stderr or proc.stdout).strip()[-200:]}"
+        try:
+            items = json.loads(proc.stdout or "[]")
+        except json.JSONDecodeError:
+            return None, BLOCKED_PR_STATE, "PR 查询结果不是合法 JSON"
+        if not isinstance(items, list):
+            return None, BLOCKED_PR_STATE, "PR 查询结果不是数组"
+        if any(not isinstance(item, dict) for item in items):
+            return None, BLOCKED_PR_STATE, "PR 查询结果含非对象条目"
+        if not items:
+            return None, "", ""
+        for item in items:
+            missing = [name for name in self.PR_REQUIRED_FIELDS if item.get(name) in (None, "")]
+            if missing:
+                return None, BLOCKED_PR_STATE, f"PR 查询结果不完整，缺字段: {', '.join(missing)}"
+        if len(items) > 1:
+            return None, BLOCKED_PR_STATE, f"PR 查询结果有歧义（{len(items)} 条匹配 {branch}），交人工"
+
+        pr = items[0]
+        if pr["headRefName"] != branch:
+            return None, BLOCKED_PR_STATE, f"PR Head 分支不符: {pr['headRefName']}"
+        if pr["baseRefName"] != base_branch:
+            return None, BLOCKED_PR_STATE, f"PR Base 分支不符: {pr['baseRefName']}（期望 {base_branch}）"
+        state = str(pr["state"]).upper()
+        if state == "MERGED":
+            return None, BLOCKED_PR_STATE, "PR 已合并：不自动复用、不重开、不创建替代 PR"
+        if state == "CLOSED":
+            return None, BLOCKED_PR_STATE, "PR 已关闭：不自动复用或重开，交人工"
+        if state != "OPEN":
+            return None, BLOCKED_PR_STATE, f"PR 状态无法处理: {state}"
+        if not pr["isDraft"]:
+            return None, BLOCKED_PR_STATE, "PR 不是 Draft：拒绝自动复用，交人工"
+        if not valid_object_id(pr["headRefOid"]):
+            return None, BLOCKED_PR_STATE, f"PR Head SHA 非法: {pr['headRefOid']!r}"
+        if str(pr["headRefOid"]).lower() != str(candidate_sha).lower():
+            return None, BLOCKED_BRANCH_CONFLICT, (
+                f"PR Head SHA 与 candidate 不一致: {pr['headRefOid'][:12]} != {candidate_sha[:12]}")
+        return pr, "", ""
+
     # -------------------------------------------------------------- publish
     def publish(self, job: dict, *, worktree: Path, candidate_sha: str, repo: str,
                 base_branch: str, expected_base_sha: str | None = None,
@@ -261,16 +335,39 @@ class Publisher:
             return result
         self._record(result, "remote_ok", remote=info)
 
-        # 5) base branch must not have moved
+        # 5) base branch must be readable and stable — 读不到就拒绝，不猜
         remote_base = self._remote_branch_sha(worktree, base_branch)
-        if expected_base_sha and remote_base and remote_base != expected_base_sha:
+        base_problem = self._base_sha_problem(remote_base)
+        if base_problem:
+            result.status = BLOCKED_REMOTE
+            result.detail = f"无法可靠读取远端 base {base_branch}: {base_problem}"
+            self._record(result, "base_check")
+            return result
+        if expected_base_sha and remote_base != expected_base_sha:
             result.status = BLOCKED_BASE_MOVED
             result.detail = f"目标分支已变化: remote={remote_base[:12]} expected={expected_base_sha[:12]}"
             self._record(result, "base_check")
             return result
         self._record(result, "base_ok", remote_base=remote_base)
 
-        # 6) resume: already pushed?
+        # 6) existing PR is inspected BEFORE any write: 不确定就整体停止
+        existing, pr_status, pr_detail = self._inspect_pr(repo, branch, base_branch, candidate_sha)
+        if pr_status:
+            result.status = pr_status
+            result.detail = pr_detail
+            self._record(result, "pr_conflict")
+            return result
+        if existing:
+            journal = self.load_journal(job_id)
+            result.status = (PR_RECOVERED
+                             if journal.get("stage") in ("pushed", "pr_creating") else PR_EXISTS)
+            result.pr_url = existing.get("url")
+            result.pr_number = existing.get("number")
+            result.detail = "已有 OPEN Draft PR 且 Head SHA 与 candidate 一致，复用，不重复创建"
+            self._record(result, "pr_exists", pr=existing.get("url"))
+            return result
+
+        # 7) push (idempotent: 分支已存在且一致就不推)
         journal = self.load_journal(job_id)
         remote_branch = self._remote_branch_sha(worktree, branch)
         if remote_branch and remote_branch != candidate_sha:
@@ -285,51 +382,86 @@ class Publisher:
             self._record(result, "pushing")
             if crash_after == "push":
                 raise RuntimeError("simulated crash after push")
-            push = self._git("push", self.remote, f"HEAD:refs/heads/{branch}", cwd=worktree)
-            if push.returncode != 0:
-                result.status = FAILED_PUSH
-                result.detail = (push.stderr or push.stdout).strip()[-500:]
-                self._record(result, "push_failed")
-                return result
-            remote_branch = self._remote_branch_sha(worktree, branch)
-            if remote_branch != candidate_sha:
-                result.status = FAILED_PUSH
-                result.detail = f"推送后远端 SHA 不匹配: {remote_branch}"
-                self._record(result, "push_verify_failed")
-                return result
-            self._record(result, "pushed", remote_sha=remote_branch)
+            try:
+                push = self._git("push", self.remote, f"HEAD:refs/heads/{branch}", cwd=worktree)
+            except subprocess.TimeoutExpired:
+                # 推送超时 ≠ 没推成功：先读远端对账，确认落地才继续，否则拒绝重试
+                landed = self._remote_branch_sha(worktree, branch)
+                if landed == candidate_sha:
+                    remote_branch = landed
+                    self._record(result, "pushed_after_timeout", remote_sha=landed)
+                else:
+                    result.status = FAILED_PUSH
+                    result.detail = "推送超时，且无法通过远端对账确认分支已落地；拒绝盲目重推"
+                    self._record(result, "push_timeout_unconfirmed")
+                    return result
+            else:
+                if push.returncode != 0:
+                    result.status = FAILED_PUSH
+                    result.detail = (push.stderr or push.stdout).strip()[-500:]
+                    self._record(result, "push_failed")
+                    return result
+                remote_branch = self._remote_branch_sha(worktree, branch)
+                if remote_branch != candidate_sha:
+                    result.status = FAILED_PUSH
+                    result.detail = f"推送后远端 SHA 不匹配: {remote_branch}"
+                    self._record(result, "push_verify_failed")
+                    return result
+                self._record(result, "pushed", remote_sha=remote_branch)
 
-        # 7) PR: idempotent by head branch
-        existing = self._find_pr(repo, branch)
-        if existing:
-            result.status = PR_RECOVERED if journal.get("stage") in ("pushed", "pr_creating") else PR_EXISTS
-            result.pr_url = existing.get("url")
-            result.pr_number = existing.get("number")
-            result.detail = "已有 PR，复用，不重复创建"
-            self._record(result, "pr_exists", pr=existing.get("url"))
+        # 8) base must not have moved between read and PR creation
+        base_again = self._remote_branch_sha(worktree, base_branch)
+        if base_again != remote_base:
+            result.status = BLOCKED_BASE_MOVED
+            result.detail = (f"发布过程中远端 base 发生变化: {base_again} != {remote_base}"
+                             if base_again else "发布过程中远端 base 变为不可读")
+            self._record(result, "base_recheck")
             return result
 
+        # 9) PR: idempotent by head branch — 先查后建，失败要对账而不是盲目重建
         self._record(result, "pr_creating")
         pr_body = body or self._default_body(job, candidate_sha, branch)
-        create = self._run(
-            [*self.gh_cmd, "pr", "create", "--repo", repo, "--head", branch,
-             "--base", base_branch, "--title", title or f"[SoloShip] {task_id}",
-             "--body-file", "-"] + (["--draft"] if self.draft else []),
-            stdin_text=pr_body,
-        )
+        try:
+            create = self._run(
+                [*self.gh_cmd, "pr", "create", "--repo", repo, "--head", branch,
+                 "--base", base_branch, "--title", title or f"[SoloShip] {task_id}",
+                 "--body-file", "-"] + (["--draft"] if self.draft else []),
+                stdin_text=pr_body,
+            )
+        except subprocess.TimeoutExpired:
+            found, _status, _detail = self._inspect_pr(repo, branch, base_branch, candidate_sha)
+            if found:
+                result.status = PR_RECOVERED
+                result.pr_url = found.get("url")
+                result.pr_number = found.get("number")
+                result.detail = "创建 PR 超时；经远端对账确认 PR 已存在，按已发布处理"
+                self._record(result, "pr_recovered_after_timeout", pr=found.get("url"))
+            else:
+                result.status = FAILED_PR
+                result.detail = "创建 PR 超时，重新查询未发现 PR；不自动重建，需人工对账"
+                self._record(result, "pr_timeout_unconfirmed")
+            return result
+
         text = f"{create.stdout}\n{create.stderr}".strip()
         if create.returncode != 0:
             lowered = text.lower()
             if any(marker in lowered for marker in AUTH_MARKERS):
                 result.status = FAILED_AUTH
             elif "already exists" in lowered:
-                found = self._find_pr(repo, branch)
-                result.status = PR_RECOVERED if found else FAILED_PR
-                result.pr_url = (found or {}).get("url")
-                result.pr_number = (found or {}).get("number")
+                # 声称已存在：必须重新严格核对，不能直接采信
+                found, pr_status2, pr_detail2 = self._inspect_pr(repo, branch, base_branch,
+                                                                 candidate_sha)
+                if found:
+                    result.status = PR_RECOVERED
+                    result.pr_url = found.get("url")
+                    result.pr_number = found.get("number")
+                    result.detail = "创建返回已存在；经远端核对一致，按已发布处理"
+                else:
+                    result.status = pr_status2 or FAILED_PR
+                    result.detail = f"创建返回已存在，但重新核对未通过: {pr_detail2 or text[-200:]}"
             else:
                 result.status = FAILED_PR
-            result.detail = text[-500:]
+            result.detail = result.detail or text[-500:]
             self._record(result, "pr_failed")
             return result
 

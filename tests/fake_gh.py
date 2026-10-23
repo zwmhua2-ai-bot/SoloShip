@@ -28,13 +28,17 @@ def log(argv: list[str]) -> None:
         fh.write(json.dumps({"at": time.time(), "argv": argv}, ensure_ascii=False) + "\n")
 
 
-def created_pr() -> dict | None:
+def created_prs() -> list:
+    """状态目录里的 PR 记录：单条 dict 或多条 list（用于模拟歧义查询）。"""
     if STATE is None:
-        return None
+        return []
     path = STATE / "pr.json"
     if not path.is_file():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    return [data]
 
 
 def main() -> int:
@@ -52,8 +56,14 @@ def main() -> int:
         return 0
 
     if argv[:2] == ["pr", "list"]:
-        pr = created_pr()
-        print(json.dumps([pr] if pr else []))
+        if MODE == "listfail":
+            sys.stderr.write("gh: could not determine base repository for PR query\n")
+            return 1
+        if MODE == "badjson":
+            print("not-json-at-all")
+            return 0
+        pr = created_prs()
+        print(json.dumps(pr))
         return 0
 
     if argv[:1] == ["api"]:
@@ -97,8 +107,15 @@ def main() -> int:
         if MODE == "create_fail":
             sys.stderr.write("GraphQL: Resource not accessible by integration (createPullRequest)\n")
             return 1
+        # 记录真实 candidate 与分支名，复用路径才能做严格校验（SS-V01-005）
+        candidate = os.environ.get("FAKE_GH_CANDIDATE", "deadbeef")
+        head_ref = next((argv[i + 1] for i, a in enumerate(argv)
+                         if a == "--head" and i + 1 < len(argv)), "soloship/unknown")
+        base_ref = next((argv[i + 1] for i, a in enumerate(argv)
+                         if a == "--base" and i + 1 < len(argv)), "main")
         pr = {"number": 7, "url": "https://github.com/fixture/soloship-demo/pull/7",
-              "state": "OPEN", "isDraft": True, "headRefOid": "deadbeef"}
+              "state": "OPEN", "isDraft": True, "headRefOid": candidate,
+              "headRefName": head_ref, "baseRefName": base_ref}
         if STATE is not None:
             STATE.mkdir(parents=True, exist_ok=True)
             (STATE / "pr.json").write_text(json.dumps(pr), encoding="utf-8")

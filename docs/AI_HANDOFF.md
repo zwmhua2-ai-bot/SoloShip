@@ -54,7 +54,8 @@
 | SS-DOC-002 交接文档一致性修正 | 完成 | 见交付报告 |
 | SS-V01-003 测试命令授权加固 | 完成 | `dc25135` |
 | SS-V01-003-R1 测试解释器可信路径验证 | 完成 | `66cb2ef` |
-| SS-V01-004 Reviewer Candidate SHA 严格绑定 | 完成 | 见交付报告 |
+| SS-V01-004 Reviewer Candidate SHA 严格绑定 | 完成 | `0db54fc` |
+| SS-V01-005 Publisher 发布门禁与幂等性加固 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
@@ -76,10 +77,10 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 346 tests in 298.894s — OK`（SS-V01-004 交付前实测） |
-| 时间 | 2026-10-24 03:03（本地） |
+| 结果 | `Ran 374 tests in 416.465s — OK`（SS-V01-005 交付前实测） |
+| 时间 | 2026-10-24 03:43（本地） |
 | 证据来源 | 本机实际执行输出（`PYTHONDONTWRITEBYTECODE=1`） |
-| 上一基线 | `323 OK`（2026-10-24 02:48，SS-V01-003-R1），新增 23 项 SHA 绑定回归后升为 346 |
+| 上一基线 | `346 OK`（2026-10-24 03:03，SS-V01-004），新增 28 项发布门禁回归后升为 374 |
 | 之后是否复跑 | 无。接手后须自行复跑；不得把上面这行当成"我刚跑过" |
 
 ## 6. 运行状态（必须重新核实）
@@ -139,7 +140,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 ```bash
 cd /e/Documents/AI-Developer/repositories/SoloShip      # 或 Windows 路径
 git rev-parse HEAD && git status --short                # 核对版本与工作区
-python -m unittest discover -s tests                    # 确认 346 项基线
+python -m unittest discover -s tests                    # 确认 374 项基线
 python bridge/supervisor.py status --root .             # 重新核实运行态
 ```
 

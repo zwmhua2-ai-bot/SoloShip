@@ -11,90 +11,14 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bridge"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import github_publisher as gp  # noqa: E402
 import p02_bridge as p02  # noqa: E402
-
-FAKE_GH = str(ROOT / "tests" / "fake_gh.py")
-REPO = "fixture/soloship-demo"
+from p03_fixture import FAKE_GH, REPO, PublisherFixture, sh  # noqa: E402
 
 
-def sh(cmd, cwd=None, check=True):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check,
-                          encoding="utf-8", errors="replace")
-
-
-class PublisherTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="p03-"))
-        self.remote = self.tmp / "fixture" / "soloship-demo.git"
-        self.remote.parent.mkdir(parents=True, exist_ok=True)
-        sh(["git", "init", "--bare", "-q", str(self.remote)])
-        self.repo = self.tmp / "demo" / "soloship-demo"
-        self.repo.mkdir(parents=True)
-        sh(["git", "-C", str(self.repo), "init", "-q", "-b", "main"])
-        sh(["git", "-C", str(self.repo), "config", "user.name", "t"])
-        sh(["git", "-C", str(self.repo), "config", "user.email", "t@t"])
-        (self.repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
-        sh(["git", "-C", str(self.repo), "add", "-A"])
-        sh(["git", "-C", str(self.repo), "commit", "-q", "-m", "base"])
-        self.base_sha = sh(["git", "-C", str(self.repo), "rev-parse", "HEAD"]).stdout.strip()
-        sh(["git", "-C", str(self.repo), "remote", "add", "origin", str(self.remote)])
-        sh(["git", "-C", str(self.repo), "push", "-q", "origin", "main"])
-
-        # candidate worktree on a task branch
-        self.worktree = self.tmp / "wt"
-        sh(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "task-branch", str(self.worktree)])
-        (self.worktree / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
-        sh(["git", "-C", str(self.worktree), "add", "-A"])
-        sh(["git", "-C", str(self.worktree), "commit", "-q", "-m", "feature"])
-        self.candidate = sh(["git", "-C", str(self.worktree), "rev-parse", "HEAD"]).stdout.strip()
-
-        self.gh_state = self.tmp / "gh-state"
-        self.gh_log = self.tmp / "gh.log"
-        self.config = {
-            "github": {
-                "enabled": True, "mode": "mock", "remote": "origin",
-                "allowed_repos": [REPO], "allowed_base_branches": ["main"],
-                "branch_prefix": "soloship/", "draft": True,
-                "target_repo": REPO, "target_branch": "main",
-            }
-        }
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def publisher(self, config=None, gh_cmd=None):
-        return gp.Publisher(self.tmp, config or self.config,
-                            gh_cmd=gh_cmd or [sys.executable, FAKE_GH],
-                            journal_dir=self.tmp / ".control" / "p03" / "publish")
-
-    def job(self, **overrides):
-        payload = {
-            "job_id": "p03_job_0001", "request_id": "p03_task_0001", "status": "P02_READY_FOR_HUMAN",
-            "head_commit": self.candidate, "base_commit": self.base_sha,
-            "tests_ok": True, "review_status": "REVIEW_APPROVED", "fix_rounds": 0,
-            "changed_paths": ["app.py"], "execution_mode": "WINDOWS_TEST_MODE",
-            "sandbox_status": "SANDBOX_UNENFORCED", "test_isolation": "TEST_ISOLATION_PARTIAL",
-            "isolation_claim": "NONE", "title": "P03 test",
-        }
-        payload.update(overrides)
-        return payload
-
-    def env(self, **extra):
-        base = {"FAKE_GH_STATE": str(self.gh_state), "FAKE_GH_LOG": str(self.gh_log)}
-        base.update(extra)
-        return mock.patch.dict(os.environ, base)
-
-    def publish(self, **kwargs):
-        kwargs.setdefault("worktree", self.worktree)
-        kwargs.setdefault("candidate_sha", self.candidate)
-        kwargs.setdefault("repo", REPO)
-        kwargs.setdefault("base_branch", "main")
-        kwargs.setdefault("expected_base_sha", self.base_sha)
-        job = kwargs.pop("job", self.job())
-        return self.publisher(kwargs.pop("config", None), kwargs.pop("gh_cmd", None)).publish(job, **kwargs)
-
+class PublisherTests(PublisherFixture):
     # -- happy path --------------------------------------------------------
     def test_draft_pr_created(self):
         with self.env():
@@ -157,9 +81,18 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(result.status, gp.BLOCKED_BASE_MOVED)
 
     def test_push_failure(self):
-        broken = self.tmp / "missing" / "fixture" / "soloship-demo.git"
-        sh(["git", "-C", str(self.worktree), "remote", "set-url", "origin", str(broken)])
-        result = self.publish()
+        # 远端可达（base 可读），仅推送被拒 → FAILED_PUSH
+        original_git = gp.Publisher._git
+
+        def reject_push(self, *args, **kwargs):
+            if args and args[0] == "push":
+                return subprocess.CompletedProcess(args=list(args), returncode=1,
+                                                   stdout="", stderr="remote rejected")
+            return original_git(self, *args, **kwargs)
+
+        with self.env():
+            with mock.patch.object(gp.Publisher, "_git", reject_push):
+                result = self.publish()
         self.assertEqual(result.status, gp.FAILED_PUSH)
 
     def test_pr_create_failure(self):
