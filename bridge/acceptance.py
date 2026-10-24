@@ -103,8 +103,34 @@ AC_ASSERTION_SEEN = "assertion_seen_in_diff"   # 有测试名线索 + diff 里�
 AC_NAME_ONLY = "test_name_only"                # 只有测试名线索
 AC_PARTIAL = "partially_covered"               # 关键词只命中一部分
 AC_UNVERIFIED = "unverified"
+AC_MANUAL = "manual_pending"                   # 人工验收项：不得由自动证据判定
 
-STATUS_ORDER = (AC_ASSERTION_SEEN, AC_NAME_ONLY, AC_PARTIAL, AC_UNVERIFIED)
+STATUS_ORDER = (AC_ASSERTION_SEEN, AC_NAME_ONLY, AC_PARTIAL, AC_MANUAL, AC_UNVERIFIED)
+
+
+def _review_binding(report: dict, candidate_sha: str | None) -> dict:
+    """Reviewer 是否审查了同一个 candidate（SS-V01-AC-001）。
+
+    Reviewer 只有总体结论时，不能伪造逐条 AC 审查证据；这里只回答一个问题：
+    这条审查结论能不能绑定到当前 candidate SHA 上。
+    """
+    reviews = report.get("reviews") or []
+    last = reviews[-1] if reviews and isinstance(reviews[-1], dict) else {}
+    review_sha = last.get("candidate_sha")
+    base = {"status": last.get("status"), "candidate_sha": review_sha,
+            "source": "report.reviews[-1]", "bound": False, "reason": ""}
+    if not review_sha:
+        base["reason"] = "Reviewer 未回报 candidate_sha，无法确认审查对象"
+        return base
+    if not candidate_sha:
+        base["reason"] = "任务没有 candidate SHA，无法核对审查对象"
+        return base
+    if review_sha != candidate_sha:
+        base["reason"] = (f"Reviewer 审查的是 {review_sha[:12]}，"
+                          f"与 candidate {candidate_sha[:12]} 不一致")
+        return base
+    base["bound"] = True
+    return base
 
 
 def _test_bodies(diff_text: str) -> dict[str, dict]:
@@ -147,12 +173,16 @@ def _possible_tests(names: list[str], missing: list[str]) -> list[str]:
     return hints
 
 
-def _ac_review(task: dict, report: dict, diff_text: str = "") -> list[dict]:
+def _ac_review(task: dict, report: dict, diff_text: str = "",
+               candidate_sha: str | None = None, review_binding: dict | None = None,
+               report_path: str | None = None) -> list[dict]:
     names = _test_names(report)
     joined = " ".join(names).lower()
     bodies = _test_bodies(diff_text)
     diff_available = bool((diff_text or "").strip())
     tests_ok = (report.get("tests") or {}).get("exit_code") == 0
+    tests = report.get("tests") or {}
+    binding = review_binding or {"bound": False, "reason": "没有审查绑定信息"}
 
     results = []
     for item in task.get("acceptance") or []:
@@ -165,8 +195,14 @@ def _ac_review(task: dict, report: dict, diff_text: str = "") -> list[dict]:
                          if any(token in name.lower() for token in matched)]
         assertions = sum((bodies.get(name) or {}).get("assertions", 0)
                          for name in matched_tests)
+        verification = str(item.get("verification") or "unspecified")
+        is_manual = verification not in ("automated", "unspecified")
 
-        if not tests_ok:
+        if is_manual:
+            status = AC_MANUAL
+            basis = "人工验收项：不得由自动证据判定"
+            uncertainty = "必须由人按原始描述逐条确认"
+        elif not tests_ok:
             status = AC_UNVERIFIED
             basis = "测试未通过，无法据此判定该项已实现"
             uncertainty = "测试结论为失败或缺失"
@@ -197,7 +233,31 @@ def _ac_review(task: dict, report: dict, diff_text: str = "") -> list[dict]:
             basis = "仅测试名命中 " + ", ".join(matched) + "，未见断言证据"
             uncertainty = "只有命名线索；不能据此认定行为已验证"
 
-        results.append({
+        # ---- 证据矩阵（SS-V01-AC-001）：每条 AC 都能回答"证据在哪、缺什么" ----
+        missing_evidence: list[str] = []
+        if not candidate_sha:
+            missing_evidence.append("缺少 candidate SHA")
+        if not tests_ok:
+            missing_evidence.append("测试未通过或没有测试记录")
+        if not names:
+            missing_evidence.append("没有可引用的测试用例名（report.tests.stderr_tail）")
+        if not diff_available:
+            missing_evidence.append("diff 证据不可用，无法核对断言")
+        if not matched and not is_manual:
+            missing_evidence.append("没有测试名命中本条关键词")
+        if not binding.get("bound"):
+            missing_evidence.append(f"Reviewer 未绑定同一 candidate SHA：{binding.get('reason')}")
+
+        if is_manual:
+            human_action = f"人工验收：{item.get('description')}"
+        elif status == AC_UNVERIFIED:
+            human_action = "人工读代码或手测，确认本条是否满足"
+        elif status in (AC_PARTIAL, AC_NAME_ONLY):
+            human_action = "人工确认现有测试是否覆盖本条语义"
+        else:
+            human_action = "人工确认断言语义是否等价于本条描述"
+
+        entry = {
             "id": item.get("id"),
             "description": item.get("description"),
             "status": status,
@@ -211,11 +271,35 @@ def _ac_review(task: dict, report: dict, diff_text: str = "") -> list[dict]:
             "possible_tests": _possible_tests(names, missing),
             "basis": basis,
             "uncertainty": uncertainty,
-        })
+            # ---- 以下为证据矩阵字段 ----
+            "ac_id": item.get("id"),
+            "verification": verification,
+            "candidate_sha": candidate_sha,
+            "coverage_status": status,
+            "test_evidence": {
+                "command": tests.get("command"),
+                "exit_code": tests.get("exit_code"),
+                "test_names": names,
+                "matched_tests": matched_tests,
+                "assertions_in_diff": assertions,
+                "report_path": report_path,
+            },
+            "review_evidence": {
+                "status": binding.get("status"),
+                "candidate_sha": binding.get("candidate_sha"),
+                "bound": bool(binding.get("bound")),
+                "reason": binding.get("reason", ""),
+                "source": binding.get("source"),
+            },
+            "missing_evidence": missing_evidence,
+            "human_action": human_action,
+        }
+        results.append(entry)
     return results
 
 
-def _risks(record: dict, report: dict, acs: list[dict]) -> list[str]:
+def _risks(record: dict, report: dict, acs: list[dict],
+           review_binding: dict | None = None) -> list[str]:
     risks = []
     sandbox = report.get("sandbox_status")
     if sandbox and sandbox != "SANDBOX_ENFORCED":
@@ -230,6 +314,9 @@ def _risks(record: dict, report: dict, acs: list[dict]) -> list[str]:
         risks.append("Review 状态缺失，独立审查证据不完整。")
     if (record.get("review") or {}).get("blocking_findings"):
         risks.append(f"Review 报出 {record['review']['blocking_findings']} 项阻塞问题。")
+    if review_binding is not None and not review_binding.get("bound"):
+        risks.append(f"Reviewer 未绑定同一 candidate SHA（{review_binding.get('reason')}），"
+                     "审查证据不可采信。")
     name_only = [ac["id"] for ac in acs if ac["status"] == AC_NAME_ONLY]
     partial = [ac["id"] for ac in acs if ac["status"] == AC_PARTIAL]
     pending = [ac["id"] for ac in acs if ac["status"] == AC_UNVERIFIED]
@@ -335,8 +422,11 @@ def build(root: Path, request_id: str | None = None) -> dict:
 
     diff_text = _read_diff(root, report)
     files = _changed_files(diff_text)
-    acs = _ac_review(task, report, diff_text)
-    risks = _risks(record, report, acs)
+    candidate_sha = record.get("head_commit") or report.get("head_commit")
+    review_binding = _review_binding(report, candidate_sha)
+    acs = _ac_review(task, report, diff_text, candidate_sha, review_binding,
+                     record.get("report_path"))
+    risks = _risks(record, report, acs, review_binding)
     tests = report.get("tests") or {}
     tail = tests.get("stderr_tail") or ""
     test_count = None
@@ -365,6 +455,21 @@ def build(root: Path, request_id: str | None = None) -> dict:
         "acceptance_verified": False,
         "acceptance_note": ("验收结论只是线索（测试名 / diff 中的断言），"
                             "语义正确性需人工判定"),
+        # ---- 证据矩阵（SS-V01-AC-001）----
+        "candidate_sha": candidate_sha,
+        "review_binding": review_binding,
+        "evidence_matrix": {
+            "candidate_sha": candidate_sha,
+            "report_path": record.get("report_path"),
+            "report_md_path": record.get("report_md_path"),
+            "receipt_path": record.get("receipt_path"),
+            "tests": {"ok": tests.get("exit_code") == 0,
+                      "exit_code": tests.get("exit_code"),
+                      "passed": test_count, "command": tests.get("command")},
+            "review_bound": review_binding.get("bound"),
+            "acs": {ac["ac_id"]: ac["coverage_status"] for ac in acs},
+            "generated_by": "p04-acceptance-assistant",
+        },
         "risks": risks,
         "manual_checks": _manual_checks(record, files),
         "auto_merge": False,
@@ -404,6 +509,31 @@ def render_markdown(data: dict) -> str:
         lines += ["", "可能相关但未直接命中的用例（仅供人工追踪，不作为证据）：", ""]
         for ac in hints:
             lines.append(f"- `{ac['id']}` ← " + ", ".join(f"`{n}`" for n in ac["possible_tests"]))
+
+    # ---- 证据矩阵：每条 AC 的证据位置、缺失项与人工动作 ----
+    matrix = data.get("evidence_matrix") or {}
+    binding = data.get("review_binding") or {}
+    lines += ["", "## 证据矩阵", "",
+              f"- Candidate SHA：`{data.get('candidate_sha') or '缺失'}`",
+              f"- 测试证据：退出码 `{matrix.get('tests', {}).get('exit_code')}`，"
+              f"用例数 `{matrix.get('tests', {}).get('passed')}`"
+              f"（证据位置：`{matrix.get('report_path') or '缺失'}`）",
+              f"- Reviewer 绑定：{'是' if binding.get('bound') else '否'}"
+              f"（{binding.get('reason') or ('已绑定到同一 candidate' if binding.get('bound') else '未提供原因')}）",
+              f"- 自动合并：**否**；`acceptance_verified=False` 恒成立", "",
+              "| AC | verification | 覆盖结论 | Candidate | 测试证据 | Reviewer 绑定 | 缺失证据 | 人工动作 |",
+              "|---|---|---|---|---|---|---|---|"]
+    for ac in data["acceptance"]:
+        test_ev = ac.get("test_evidence") or {}
+        review_ev = ac.get("review_evidence") or {}
+        tests_ref = (f"退出码 {test_ev.get('exit_code')}；"
+                     f"命中 {len(test_ev.get('matched_tests') or [])} 个用例")
+        lines.append(
+            f"| {ac.get('ac_id')} | {ac.get('verification')} | `{ac.get('coverage_status')}` "
+            f"| `{(ac.get('candidate_sha') or '缺失')[:12]}` | {tests_ref} "
+            f"| {'是' if review_ev.get('bound') else '否'} "
+            f"| {'；'.join(ac.get('missing_evidence') or []) or '—'} "
+            f"| {ac.get('human_action')} |")
     lines += ["", "## 未验证事项与剩余风险", ""]
     lines += [f"- {item}" for item in data["risks"]] or ["- 无已识别风险（不代表无风险）"]
     lines += ["", "## 需要人工体验的检查项", ""]

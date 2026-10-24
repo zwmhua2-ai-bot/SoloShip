@@ -5,7 +5,42 @@
 
 ---
 
-## SS-V01-006 · P05-C：Supervisor 中断恢复与安全重调度（本条目）
+## SS-V01-AC-001 · 逐条 AC 验收证据矩阵（本条目）
+
+- **提交**：见交付报告
+- **基线**：`6970901b`
+- **原因**：P04 验收助手已能给出逐条 AC 的线索级结论，但每条 AC **没有可追溯的证据记录**：
+  看不到对应哪次测试、哪个 Candidate SHA、Reviewer 是否审过同一提交、缺什么证据、
+  人工还要做什么。任务卡要求补齐矩阵，且**不得把线索升级为验收通过**。
+- **决策**：
+  1. 复用现有协议：`acceptance` 条目**保留全部原字段**（`id/description/status/verified/
+     matched_*/basis/…`），新增 `ac_id / verification / candidate_sha / coverage_status /
+     test_evidence / review_evidence / missing_evidence / human_action`。
+  2. `_review_binding()`：只回答"审查结论能不能绑到当前 candidate SHA 上"——
+     Reviewer 未回报 SHA、或与 candidate 不一致 → `bound=False`，并在 risks 明示
+     "审查证据不可采信"；**不伪造逐条 AC 审查结论**。
+  3. Manual AC（`verification != automated`）→ `coverage_status = manual_pending`，
+     `verified=False`，`human_action` 保留人工验收要求；缺 `verification` 字段时按原逻辑走，
+     不改变既有结论。
+  4. `missing_evidence` 显式列出缺什么（无 candidate SHA / 测试未过 / 无用例名 /
+     diff 不可用 / 无关键词命中 / Reviewer 未绑定）。
+  5. 顶层新增 `candidate_sha`、`review_binding`、`evidence_matrix`（证据位置 + 各 AC 覆盖度），
+     Markdown 增加「证据矩阵」表。`acceptance_verified` / `auto_merge` 恒为 False。
+  6. 只读原始证据：仍只写 `exchange/p04/acceptance/`，不改 P02 报告/回执/Journal。
+- **测试**：新增 `tests/test_p04_ac_matrix.py` 12 项（AC-01..AC-09）：字段完整性、
+  真实测试证据引用、测试失败不验证、名称相似无断言不算覆盖、证据缺失显式未验证、
+  Manual AC、候选 SHA 与证据路径、Reviewer SHA 不一致/缺失/一致、重复生成一致且不改原始证据。
+  修复前 10 项 KeyError/FAIL。全量 `414 OK`（2026-10-24 09:33，465.183s，渲染微调后复跑）；
+  既有 `test_p04_acceptance` 等 56 项未受影响。
+- **兼容性**：旧字段与输出文件路径不变；新增字段为纯追加，旧消费者不受影响。
+  行为变化：Reviewer 未绑定 candidate SHA 时多一条风险（原来只报"Review 状态缺失"）。
+- **遗留**：`test_evidence.test_names` 仍来自 `report.tests.stderr_tail` 的解析，
+  不是逐条测试的结构化日志；若报告没有 stderr_tail，矩阵只能标"无用例名"。
+  逐条 AC 的语义验证仍必须由人完成（设计约束）。
+
+---
+
+## SS-V01-006 · P05-C：Supervisor 中断恢复与安全重调度
 
 - **提交**：见交付报告
 - **基线**：`7eb8988`
@@ -333,4 +368,4 @@
 首次纳入 git 的提交是 `24d0337`（`chore: 初始化 SoloShip 流水线源码（P00–P05B）`，46 个文件），
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
-测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382 → 402）来自各阶段报告与提交信息，属**可核实**范围。
+测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382 → 402 → 414）来自各阶段报告与提交信息，属**可核实**范围。

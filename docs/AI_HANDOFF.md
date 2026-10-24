@@ -57,7 +57,8 @@
 | SS-V01-004 Reviewer Candidate SHA 严格绑定 | 完成 | `0db54fc` |
 | SS-V01-005 Publisher 发布门禁与幂等性加固 | 完成 | `0fa7f45` |
 | SS-V01-005-R1 PR 来源仓库身份验证 | 完成 | `7eb8988` |
-| SS-V01-006（P05-C）Supervisor 中断恢复与安全重调度 | 完成 | 见交付报告 |
+| SS-V01-006（P05-C）Supervisor 中断恢复与安全重调度 | 完成 | `6970901` |
+| SS-V01-AC-001 逐条 AC 验收证据矩阵 | 完成 | 见交付报告 |
 
 P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成，没有对应提交，
 详见 `docs/DEVLOG.md` 的「未核实/无提交」说明。
@@ -80,10 +81,10 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 | 项 | 值 |
 | --- | --- |
 | 命令 | `python -m unittest discover -s tests`（**不要加** `-t .`） |
-| 结果 | `Ran 402 tests in 421.460s — OK`（SS-V01-006 交付前实测） |
-| 时间 | 2026-10-24 04:38（本地） |
+| 结果 | `Ran 414 tests in 439.779s — OK`（SS-V01-AC-001 交付前实测） |
+| 时间 | 2026-10-24 09:21（本地） |
 | 证据来源 | 本机实际执行输出（`PYTHONDONTWRITEBYTECODE=1`） |
-| 上一基线 | `382 OK`（2026-10-24 04:05，SS-V01-005-R1），新增 20 项恢复回归后升为 402 |
+| 上一基线 | `402 OK`（2026-10-24 04:38，SS-V01-006），新增 12 项证据矩阵回归后升为 414 |
 | 之后是否复跑 | 无。接手后须自行复跑；不得把上面这行当成"我刚跑过" |
 
 ## 6. 运行状态（必须重新核实）
@@ -144,7 +145,7 @@ P00–P05B 阶段（交接到 Supervisor 自启）在**纳入 git 之前**完成
 ```bash
 cd /e/Documents/AI-Developer/repositories/SoloShip      # 或 Windows 路径
 git rev-parse HEAD && git status --short                # 核对版本与工作区
-python -m unittest discover -s tests                    # 确认 402 项基线
+python -m unittest discover -s tests                    # 确认 414 项基线
 python bridge/supervisor.py status --root .             # 重新核实运行态
 ```
 

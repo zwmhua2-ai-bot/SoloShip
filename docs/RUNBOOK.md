@@ -99,7 +99,7 @@ $PY -c "import sys,pathlib;sys.path.insert(0,'bridge');import test_policy;print(
 ## 4. 测试
 
 ```powershell
-$PY -m unittest discover -s tests                 # 全量（当前基线 402 项）
+$PY -m unittest discover -s tests                 # 全量（当前基线 414 项）
 $PY -m unittest tests.test_p02_finalize -v        # 单个测试文件
 ```
 
@@ -139,7 +139,38 @@ $PY bridge\supervisor.py start --foreground --max-cycles 1 --root $REPO
 **没有**“标记成功 / 强制放行”命令。人工处理完 `needs_human/` 下的条目后，需自行决定
 后续动作并留下记录；不得伪造成功状态。
 
-## 6. P02 恢复
+## 6. P04 验收证据矩阵（SS-V01-AC-001）
+
+```powershell
+# 生成/刷新某个任务的验收证据矩阵（只读原始证据，写 exchange/p04/acceptance/）
+$PY bridge\acceptance.py --root $REPO --request-id <request_id>
+
+# 只打印不落盘
+$PY bridge\acceptance.py --root $REPO --request-id <request_id> --print
+```
+
+每条 AC 的证据矩阵字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `ac_id` / `description` / `verification` | 来自原始任务，矩阵不得增删 |
+| `candidate_sha` | 本条证据对应的代码版本（取任务的 `head_commit`） |
+| `test_evidence` | 命令、退出码、用例名、命中用例、diff 中断言数、报告路径 |
+| `review_evidence` | Reviewer 状态及其 `candidate_sha`、是否绑定同一提交 |
+| `coverage_status` | `assertion_seen_in_diff` / `test_name_only` / `partially_covered` / `manual_pending` / `unverified` |
+| `verified` | **恒为 False**：自动判定只是线索，不是验收通过 |
+| `missing_evidence` | 明确列出缺什么（无 candidate SHA、测试未过、无用例名、diff 不可用、Reviewer 未绑定…） |
+| `human_action` | 人工还需要做什么 |
+
+硬规则：
+
+- Reviewer 未回报 `candidate_sha` 或与 candidate 不一致 → `review_evidence.bound=False`，
+  并在 risks 明示“审查证据不可采信”；**不伪造逐条 AC 审查结论**。
+- `verification != automated` 的 AC 恒为 `manual_pending`，保留人工验收要求。
+- `acceptance_verified` / `auto_merge` 恒为 False；矩阵不会触发任何合并或发布。
+- 只写 `exchange/p04/acceptance/`，不改 P02 报告、回执与 Journal。
+
+## 7. P02 恢复
 
 ```powershell
 $PY bridge\p02_bridge.py --root $REPO --recover
@@ -152,7 +183,7 @@ $PY bridge\p02_bridge.py --root $REPO --recover
   `.control/p02/finalizing/<job_id>.needs_human.json` 留痕，**不会**覆盖已有文件。
 - 幂等：重复执行结果收敛。
 
-## 7. Git 状态检查
+## 8. Git 状态检查
 
 ```powershell
 git -C $REPO rev-parse HEAD
@@ -164,7 +195,7 @@ git -C $REPO diff --stat
 
 提交前必看 `git status --short` 与 `git diff --stat`，确认改动范围与任务卡一致。
 
-## 8. 常见故障
+## 9. 常见故障
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
@@ -187,7 +218,7 @@ git -C $REPO diff --stat
 | `Start directory is not importable` | 测试命令带了 `-t .` | 去掉 `-t .` |
 | 计划任务 `LastTaskResult=0` 但没进程 | 曾出现过启动即退 | 以 `status` + 进程数为准，查 `logs/supervisor-boot.log` |
 
-## 9. 备份与恢复
+## 10. 备份与恢复
 
 **备份**
 
@@ -210,7 +241,7 @@ $PY -c "import sqlite3;s=sqlite3.connect('file:.control/p02/p02.db?mode=ro',uri=
 5. 全量测试；
 6. 再 `start`。
 
-## 10. 迁移/搬迁注意
+## 11. 迁移/搬迁注意
 
 - worktree 的 gitdir 是绝对路径，搬目录后必须在**母仓库**里执行
   `git worktree repair <新路径...>`，否则工作树失效。
