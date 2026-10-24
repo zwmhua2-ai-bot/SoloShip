@@ -3,19 +3,21 @@
 所有命令均按本仓库当前代码核对（核实时间 2026-10-24 01:15）。
 参数可能随版本变化，执行前可用 `<脚本> --help` 确认。
 
+> **发布说明（本同步分支）**：本分支 `docs/ss-v01-handoff-public` 仅同步 4 份交接文档（含本文件），基于真实 `origin/main`（`d524991`）。文中引用的详细交付报告与外置验收工具目录 `scripts/release002_acceptance/`（F-01/F-02 修复）**仅存在于本地分支、尚未发布到 `main`**；下文 `$REPO` / `$PY` 等路径与解释器均因部署而异，请按实际环境替换。
+
 约定：
 
 ```powershell
 # PowerShell
-$REPO = 'E:\Documents\AI-Developer\repositories\SoloShip'
-$PY   = 'C:\Users\hua\AppData\Local\Programs\Python\Python314\python.exe'
+$REPO = '<本仓库根目录，请按实际部署替换>'
+$PY   = '<本机 Python 解释器路径，期望 3.14.x>'
 Set-Location $REPO
 ```
 
 ```bash
 # Git Bash
-cd /e/Documents/AI-Developer/repositories/SoloShip
-PY="/c/Users/hua/AppData/Local/Programs/Python/Python314/python.exe"
+cd <仓库根目录>
+PY="<本机 Python 解释器路径>"
 ```
 
 ---
@@ -246,3 +248,88 @@ $PY -c "import sqlite3;s=sqlite3.connect('file:.control/p02/p02.db?mode=ro',uri=
 - worktree 的 gitdir 是绝对路径，搬目录后必须在**母仓库**里执行
   `git worktree repair <新路径...>`，否则工作树失效。
 - 计划任务与两个 PS 脚本里的默认 `$Root` 都写死了绝对路径，搬迁后需同步修改并重新注册任务。
+
+## SS-V01-FINAL-FIX-001 / A 补充（2026-10-24）
+
+Windows 单实例判定使用 Mutex 所有权和文件字节锁；Mutex 对象仍有句柄、锁文件仍存在，都不能单独证明 Supervisor 运行。探测只临时获取并配对释放，不改写持有者元数据。启动仍须同时满足锁、PID 和新鲜心跳。无需增加停止后的等待时间。
+
+锁回归命令：`python -m unittest discover -s tests -p test_supervisor_mutex.py -v`。测试包装器显式传入绝对 Fake Codex；本任务执行时额外启用同级证据目录中的 `sitecustomize.py`（PYTHONPATH），拒绝缺失配置与真实 Codex/gh 子进程，并记录 commands.jsonl。它是测试保护和审计，不是操作系统级沙箱。
+
+## SS-V01-FINAL-FIX-001 / B 补充（2026-10-24）
+
+FINALIZING 恢复完成后必须保留 `.control/p02/finalized/<job_id>.json`。正常最终化与恢复均按：核对已有 Manifest → 补报告/归档/最终状态 → 原子安装 Manifest → 读回验证 → 清理临时 Journal。内容相同不改写；冲突、关键证据缺失或安装/读回/清理失败保留 Journal，并明确报告错误或 NEEDS_HUMAN。恢复不启动 Codex，不调用 Publisher。
+
+存储要求：finalizing 与 finalized 应位于同一支持 hard link 的本地文件系统（本次 NTFS 已实测）。不支持 hard link、权限不足等错误不得用覆盖式 move/replace 绕过；应保留现场并人工处理。安装后、清理前中断会留下两个名字，这是可重放状态，不要手工删除其中任一证据。
+
+组合回归：`python -m unittest discover -s tests -p test_finalizing_manifest.py -v`。设置 `SOLOSHIP_EVIDENCE_DIR` 可在指定测试证据目录保存组合 E2E 的 Manifest、报告与结果摘要。全量命令仍为 `python -m unittest discover -s tests`；本次真实网络凭据负例通过外置测试保护明确 skip，不能据此宣称真实 GitHub 凭据边界已复验。
+
+### 本次回归的 PATH 条件（2026-10-24）
+
+全量的裸 `python` 规范化测试若因 WindowsApps 等目录不受信任而 skip，不应修改白名单或放松策略。可在**独立补测进程**的 PATH 首位指定当前 `sys.executable` 所在目录，再运行原测试；该目录本来已受信任，PATH 仅改变定位。本次这样补测成功，原 skip 与补测日志均保留。真实 GitHub 网络负例继续 NOT_TESTED，无额外真实网络授权。
+
+## SS-V01-FINAL-CONC-002 R2：P02 共享互斥与终态保护
+
+本节仅适用于 R2 修复版本。P02 的 CLI、Bridge 直接恢复（包括缺失报告扫描/低层重放）、Supervisor 启动时两处 P02 重放，以及正常任务/最终化共用 `.control/p02/recovery.lock`。Windows 使用 `msvcrt.locking` 文件字节锁；同线程嵌套重入，其他进程/Bridge/线程争锁立即失败。载体是持久文件，存在不表示锁被持有，**不得删除它来解锁**；进程退出后由 OS 释放。
+
+锁顺序：Supervisor 单实例锁 →（若在 recover_on_start 内）Supervisor recovery.lock → P02 锁；正常任务 request lock → P02 锁。P02 不获取前述外层锁，不形成反向依赖。正常任务在入库前取得 P02 锁，并持有到完成，避免执行后争锁失败且无 Journal。运行中的任务会使外部恢复返回 busy。
+
+CLI `--recover` 争锁时输出 `{"state":"busy","reason":"P02_RECOVERY_BUSY: ..."}`，退出码 **3**，表示本次没有恢复。直接调用抛 `RecoveryBusy`；Supervisor 的原有恢复错误摘要会带此原因，可稍后重试；不得把 busy 当成功。退出码 0 的摘要仍需核对 `needs_human/missing_reports`，不等于自动验收通过。
+
+正常调度遇到 P02_BUSY 时，Supervisor tick 将 claim 转回现有 requeued 状态并保留 history、inbox，增加 skipped 而不增加 processed；后续周期可重试。这里不需要倒序获取锁或把忙碌状态算作任务完成，单实例锁与启动恢复入口均未改变。
+
+最终化顺序固定为 Journal → DB FINALIZING → 交付物与归档 → 安装 Manifest 并读回核验 → DB 条件确认终态 → 清理 Journal。安装或核验失败保留 Journal；Manifest 成功但 DB 失败时两份证据保留；终态已提交后的清理失败只诊断，不降级 READY/BLOCKED。Journal 消失时，只有完整校验 Manifest、身份/Candidate、Reviewer/测试与交付物后才返回 `already_recovered`；缺失或冲突仍明确交人工。
+
+历史终态扫描异常不会改库，也不覆盖 Manifest/报告；人工诊断 Marker 保留原件，新发现的原因在本次摘要/日志中返回。合法 Manifest 仍可逐字节补齐缺失交付物。仅有 Manifest 而 DB 尚未完成时会继续最终化；没有证据不伪造成功。
+
+测试复现命令（在隔离开发 worktree 执行，不指定生产根）：
+
+```powershell
+python -m unittest discover -s tests -p 'test_recovery*.py' -v
+python -m unittest discover -s tests -p test_finalizing_manifest.py -v
+python tests/recovery_concurrency_probe.py --evidence <全新且位于源码目录外的证据目录>
+```
+
+探针由 CONC-001 移植，使用独立 spawn 进程和 Pipe 屏障；正常夹具显式 Fake Codex、禁用发布，恢复子进程禁止 Codex/Publisher/网络/子进程启动。双 CLI 为独立 OS 进程调用真实 CLI main；Supervisor 组合调用 detect_unfinished/recover_on_start，不启动生产常驻实例。10 轮交替测试 CLI/CLI 与 Supervisor/CLI，证据目录必须全新。
+
+生产升级需单独授权，并确保旧版与新版不并行操作同一运行根：旧进程不会遵守新增锁。保持原 hard link 同文件系统限制；本轮只验证进程异常退出，断电级目录项持久性、其他文件系统和 Linux 未验证。
+
+
+## SS-V01-RELEASE-002-R1 第一阶段（2026-10-24）
+
+仅本卡隔离验收：scripts/release002_r1_launcher.py 的 adapter_options(cli, options) 通过现有 R2 extra_args 生成全部后置 -c；保留 ignore，不传前置配置对。先做 Mock argv、exec --help、空 home 无 turn/start 配置初始化、原生文件边界核验。完整 exec 需另获真实模型授权；必须新 runtime/request_id，禁止删旧 launch-once/重置数据库。再现 read-only/blocked by policy 就停，不扩大权限。
+
+完整结果见 [第一阶段交付](SS-V01-RELEASE-002-R1-STAGE-1.md)。
+
+
+## SS-V01-RELEASE-002-R1 阶段二停止（2026-10-24）
+
+本次停止runtime只能读证据；DB真实ACCEPTED、无Receipt/Report/Manifest，不得以恢复/强改终态补造交付。原生acceptance.build因无回执索引返回找不到任务；evidence/stopped-ac-matrix为明确标记的缺失证据表，4 unverified + 1 manual_pending。命令扫描和即时预检控制缺陷需另行授权修复，剩余模型预算不得用作重试授权。
+
+完整证据见 [停止交付报告](SS-V01-RELEASE-002-R1-STAGE-2.md)。
+
+
+## SS-V01-RELEASE-002-R2（2026-10-24）
+
+仅无模型回归入口：python -B -m unittest discover -s scripts/release002_acceptance -p 'test*.py' -v。launch.ps1实际Windows测试仅调用临时Python探针；其存在不构成真实E2E授权。外置runner副本未绑定新运行根，不得直接运行或复用旧任务；先为未来卡准备全新runtime/request_id/Job。解析器只支持有界字面量PowerShell子集，遇不支持调用须安全失败。（注：`scripts/release002_acceptance/` 为本地分支 `ss-v01-release-002-r2/observer-gate` 中的外置验收工具副本，尚未发布到 `main`，请勿按已发布内容对待。）
+
+完整报告：[SS-V01-RELEASE-002-R2.md](SS-V01-RELEASE-002-R2.md)。
+
+## 12. 验收工具与真实 E2E 安全注意事项（SS-V01-RELEASE-002-R2，2026-10-24）
+
+下列为已证实的规则与安全边界，仅记录事实，不推测：
+
+1. **Windows 下 Codex CLI 的安全参数必须按已验证方式统一放在 `exec` 之后**（R2 实测：`af5177b` 后所有 `-c` 均在 `exec` 后，真实 Builder 获得 `workspace-write`）。跨子命令放置会导致 Windows 沙箱配置丢失、权限降为 read-only。
+2. **使用真实模型前必须检查实际生效的沙箱策略，而不是仅检查请求参数**：R2 阶段二以原生日志 `Windows sandbox selection: unelevated` 与 `sandbox_policy` 实测为准，而非只看请求字段。
+3. **外部观察器不能简单扫描整条命令字符串判断进程身份**：对整条命令做 `\bcodex\b` 匹配会把合法 PowerShell 可执行文件目录 `codex-runtimes` 误判为启动额外 Codex（F-01）。应区分可执行文件、路径与嵌套命令（有界 AST 解析）。
+4. **预检异常必须阻止执行器启动**：预检以默认编码读 UTF-8 JSON 异常后，PowerShell 控制流仍启动 runner 属控制缺陷（F-02）。任何预检异常、非零退出码或无效结果都必须阻止执行器启动。
+5. **异常中断的独立测试根不得直接交给 Supervisor 恢复**：`release002_r1_real_codex_001` / `p02_f98f3ad93e91` 中断后留有一个未最终化 `ACCEPTED` 任务；禁止让新 Supervisor 自动接管该运行根、改终态或重跑。
+6. **每次真实 E2E 都要使用全新授权、独立运行根及独立任务 ID**：禁止复用旧 `launch-once` / `scope` / 历史硬编码 runner；后续验收必须新 `runtime` / `request_id` / `Job`。
+7. **`WINDOWS_TEST_MODE` 不等于经过验证的完整 OS 沙箱**：`isolation_claim=NONE`，观察/取消机制不是 OS 级隔离，也不能保证事件到达前命令尚未执行（见 `AGENTS.md` §7）。
+8. **不得将真实模型、GitHub 写入和生产操作视为默认授权**：`github.enabled=false` 且系统无合并/强推代码路径；真实模型、GitHub 写入、生产 Supervisor 升级均须显式人工授权。
+
+仅无模型回归入口（不触发真实 E2E；`scripts/release002_acceptance/` 为本地分支 `ss-v01-release-002-r2/observer-gate` 中的外置验收工具副本，尚未发布到 `main`）：
+
+```powershell
+# scripts/release002_acceptance/ 尚未发布到 main，请勿按已发布内容对待
+python -B -m unittest discover -s scripts/release002_acceptance -p 'test*.py' -v
+```

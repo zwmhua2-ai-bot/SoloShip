@@ -3,7 +3,33 @@
 按时间倒序记录。每条包含：任务编号、提交、原因、关键技术决策、测试结果、遗留问题。
 **无法从仓库核实的内容一律标注「未核实」，不做推测。**
 
+> **发布说明（本同步分支）**：本分支 `docs/ss-v01-handoff-public` 仅同步 4 份交接文档（含本文件），基于真实 `origin/main`（`d524991`）。文中引用的详细交付报告（`docs/SS-V01-RELEASE-002-*.md`、`docs/SS-V01-FINAL-*-DELIVERY.md`）与外置验收工具目录 `scripts/release002_acceptance/`（F-01/F-02 修复）**仅存在于本地分支、尚未发布到 `main`**；仓库路径与解释器路径均因部署而异。请勿据此认为上述内容已公开发布。
+
 ---
+
+## 近期关键决策与结果（v0.1 收尾，2026-10-24 · SS-V01-HANDOFF-SYNC-001 文档同步）
+
+按时间顺序汇总，详细条目见下文对应 `SS-V01-*` 小节；每条均标注任务编号 / Commit / 证据位置。
+**本段为文档同步摘要，未执行任何新测试或代码改动。**
+
+1. **安全审计收尾**：`SS-V01-001`～`SS-V01-AC-001` 全部交付，安全审计结束，**不再无限扩展审核**。
+   - 证据：各卡交付报告、`AGENTS.md` §7 开关表。
+2. **R2 发布候选准备完成**：`release/v0.1.0-rc1` @ `3b8c153a` 建立，生产 `main` 仍停在 `d524991f`（v0.1.0 未发布）。
+   - 证据：`PROGRESS.md` §0；`git branch -a`。
+3. **首次真实 E2E：沙箱实际 read-only，任务 BLOCKED**：Codex CLI 的 Windows 沙箱配置因 `-c` 参数跨子命令放置而丢失，实际权限降为 read-only。
+   - 任务：`SS-V01-RELEASE-002-R1`；证据：`docs/SS-V01-RELEASE-002-R1-STAGE-2.md` §3（修复后复测的对比）。
+4. **CLI 参数布局诊断**：发现 `-c` 跨子命令配置丢失，统一放到 `exec` 之后。
+   - 任务 / Commit：`SS-V01-RELEASE-002-R1` 阶段一 / `af5177b8616d1a6f0edd57e17313144244b70a5c`；证据：`docs/SS-V01-RELEASE-002-R1-STAGE-1.md`。
+5. **R1 第一阶段：同层参数修正、无模型验证及回归通过**：R2 全量 454 PASS / 1 SKIP。
+   - 任务 / Commit：`SS-V01-RELEASE-002-R1` 阶段一 / `af5177b`；证据：同上。
+6. **R1 第二阶段：真实 Builder 权限正确，但被观察器误报终止**：真实会话验证获得正确的 Windows `workspace-write` 沙箱（unelevated / never / network=false）；外置观察器把 `codex-runtimes` 目录名误判为 Codex 命令，主动终止（exit 125）。
+   - 任务 / Commit：`SS-V01-RELEASE-002-R1` 阶段二 / `6ceae33f3c6d15c2bb3e3ec529a0fbaa26f8f7de`；证据：`docs/SS-V01-RELEASE-002-R1-STAGE-2.md`。
+7. **预检编码与失败控制流问题**：外层 Python 预检以默认编码读 UTF-8 JSON 异常后，PowerShell 控制流仍启动执行器（F-02）。
+   - 任务 / Commit：同上（`6ceae33f`）；证据：`docs/SS-V01-RELEASE-002-R1-STAGE-2.md` §2。
+8. **下一步仅修复两项验收工具缺陷**：`SS-V01-RELEASE-002-R2`（`d4c87bc2457d526c9dc0867c1503ea8354d9de59`）实现 F-01/F-02 外置工具修复（有界 AST 解析 + 预检 fail-closed），28 项无模型测试 PASS；真实 E2E 仍 `NOT_TESTED`，停止并等待用户重新授权。
+   - 证据：`docs/SS-V01-RELEASE-002-R2.md`。
+
+> 注：步骤 3 的「首次真实 E2E read-only」是 `-c` 误放导致的早期阻断；步骤 6 的「阶段二」是修复后复测，权限已正确，阻断源改为观察器误报（F-01）与预检失败控制流（F-02）。两者不矛盾。
 
 ## SS-V01-AC-001 · 逐条 AC 验收证据矩阵（本条目）
 
@@ -278,8 +304,8 @@
 
 ## 仓库迁移至 E 盘
 
-- **提交**：`b754467` `chore: 迁移到 E:/Documents/AI-Developer/repositories/SoloShip`
-- **原因**：C 盘仅剩 2.4 GB，且原路径 `C:\Users\hua\SoloShip-P00` 位于用户目录下。
+- **提交**：`b754467` `chore: 迁移到本地仓库目录（E 盘，完整路径略）`
+- **原因**：C 盘仅剩 2.4 GB，且原路径位于用户目录下（迁移前）。
 - **决策 / 过程**：
   1. 优雅停止 Supervisor（`graceful=true`）；
   2. `robocopy` 复制后做**逐文件 sha256 比对**（437 文件全等）才继续；
@@ -290,12 +316,12 @@
   - 目标目录原本**非空**（含 `B-Lite-design-kit` 与旧 zip），robocopy 把无关内容混入仓库；已移到 `repositories\` 根目录后重新比对才全等。
   - bash 工具的工作目录会持久化，shell 停在旧路径会造成目录被占用。
 - **测试**：新路径 `289 OK`。
-- **遗留**：旧目录 `C:\Users\hua\SoloShip-P00` **无法重命名**（Access Denied，已排除进程与 shell cwd），仅写入 `_MIGRATED_TO_E.txt` 标记，需人工处理。
+- **遗留**：旧目录 `SoloShip-P00`（迁移前位于用户目录下）**无法重命名**（Access Denied，已排除进程与 shell cwd），仅写入 `_MIGRATED_TO_E.txt` 标记，需人工处理。
 - **当前状态（核实 2026-10-24 01:53，与上述历史操作严格区分）**：
   - 上面写的「6 个 worktree 用 `git worktree repair` 修正 gitdir」是**迁移当时执行过的操作**，
     不代表现在仍然如此。
   - 现状：`git worktree list` 只返回主工作区
-    （`E:/Documents/AI-Developer/repositories/SoloShip 29401af [main]`）；
+    （`本仓库根目录 29401af [main]`）；
     `.git/worktrees` **目录不存在**，即那 6 个 worktree 当前**均未注册**。
   - `.worktrees/` 下仍留有 6 个目录：`p01_demo_remove_001`、`p02_trim_remove_001`、
     `p02b_router_demo_001`、`p02b_router_demo_002`、`p03d_remove_001`、`p03d_remove_002`，
@@ -369,3 +395,66 @@
 它把此前所有阶段的代码一次性提交，**不含任何中间历史**——因此这些阶段的具体改动时序**未核实**。
 
 测试规模演进（191 → 233 → 257 → 259 → 262 → 264 → 273 → 285 → 289 → 315 → 323 → 346 → 374 → 382 → 402 → 414）来自各阶段报告与提交信息，属**可核实**范围。
+
+## SS-V01-FINAL-FIX-001 / A · Windows Mutex 所有权（2026-10-24）
+
+- 基线 `d524991`；提交见该任务交付报告。
+- 根因：以 ERROR_ALREADY_EXISTS 代表锁占用，混淆对象存活与所有权；CloseHandle 未配对 ReleaseMutex。保留额外句柄的 Windows 实测确认无主锁被拒、释放后另一线程 WAIT_TIMEOUT。
+- 改为 CreateMutexW(FALSE) + WaitForSingleObject(0)，接受正常取得与 abandoned，仍须取得文件锁并走既有恢复。释放先 ReleaseMutex 后 CloseHandle；文件写入异常也释放全部资源。探测不再改写持有者元数据。
+- 新增 8 项回归通过，其中 10 次立即重启、重复实例拒绝、双进程/双启动竞争、异常退出接管均使用临时根。既有 P05 89 项通过。
+- 修复前 7 项运行出现 5 FAIL、2 ERROR；ERROR 中包含测试读取锁定文件与清理失败，已修正夹具，不作为产品缺陷证据。
+- 测试安全：旧 Supervisor/P02/CLI 包装器补显式绝对 Fake Codex；外置 sitecustomize 强制 Fake 配置并记录子进程。全量中真实 GitHub 假 Token 负例将跳过并明确标记 NOT_TESTED。
+- 未操作生产 Supervisor、配置、数据库、历史 worktree 或 GitHub。
+
+## SS-V01-FINAL-FIX-001 / B · 恢复证据持久化（2026-10-24）
+
+- 根因：正常最终化会保留 finalized 清单，但 `_recover_one()` 恢复完成后直接 unlink Journal，后续报告再次丢失时没有重建依据。组合真实进程测试在修复前断言 Manifest 不存在。
+- 复用 `soloship.p02.finalizing/v1`：原 Journal 由既有 `atomic_text` 写入、flush、fsync；以同文件系统 hard link 原子安装 finalized 名字（拒绝覆盖），读回校验 checksum 与全部内容，最后才 unlink finalizing 名字。正常最终化和恢复共用该规则。已有相同清单不重写，冲突转人工。
+- 崩溃窗口：安装前失败保留 Journal；安装后、清理前失败保留两个名字，重放时复用 Manifest；清理后保留 Manifest，可重复恢复缺失报告。清理/读回/安装异常不能报告 recovered；正常最终化安装失败返回 FINALIZE_ERROR。
+- 恢复前校验 Job ID/文件名、DB 身份与 Candidate SHA、报告文本与结构化证据、READY 的完整 Candidate/通过测试/绑定 Reviewer；缺失或冲突不补写历史报告。
+- 新增 13 项通过，既有最终化与完成后恢复 16 项通过。真实 FINALIZING 子进程退出后恢复、再次报告丢失、重复恢复均已验证；报告字节、Manifest、SHA、测试与 Reviewer 证据不变，恢复调用 Codex/Publisher 均为 0。
+- 限制：本机 E 盘 NTFS 支持 hard link；不支持 hard link 或将两个证据目录放到不同文件系统时安全失败并保留 Journal，不回退覆盖写。未做断电/内核崩溃试验。
+- 全量回归将在该修复本地提交后执行。无远端推送、生产操作或历史证据清理。
+
+## SS-V01-FINAL-FIX-001 · 全量与 E2E 收尾（2026-10-24）
+
+- 全量 435 项，446.276s，OK (skipped=2)，退出码 0。没有失败/错误；真实网络凭据负例按边界跳过，另一个 PATH 裸名测试因 WindowsApps 解释器未获信任自行跳过。
+- 仅对补测进程将当前已受信任解释器目录放到 PATH 首位，PATH 原断言补测通过（0.061s），没有改变授权策略。仍有 1 项真实网络测试 NOT_TESTED，整卡结论 PARTIAL。
+- 全量后 E2E-07/08 组合再次通过（3.372s）；E2E-10 再次 10/10 连续启停通过（29.486s）。
+- 3,701 条子进程启动尝试审计：474 条 Fake Codex、155 条 Fake gh，真实 Codex/gh、生产 Supervisor 命令和 Fake 路径违规为 0。4 个保留 E2E Job 的 Manifest 完整性与 SHA/报告绑定通过。
+- A/B 验收项开发自测 PASS，独立验收仍待进行；停止本任务，不推送、不进入 v0.2。报告 `docs/SS-V01-FINAL-FIX-001-DELIVERY.md`，外部证据目录含原始红绿日志、全量日志、后置 E2E、审计与校验和索引。
+
+## SS-V01-FINAL-CONC-002 R2 · 并发恢复、历史终态与最终化顺序
+
+- 基线 `301886d204be3d5f86565ec9d8e294adf51f9438`；只读核对验证分支 `571a28a5236747fc6241c47965d8102ce8dc9bcd`，仅移植 `recovery_concurrency_probe.py` 的夹具、Pipe 屏障与证据检查，不合并历史验证文档或状态。
+- 红证据：原探针再次实测 A READY 后 B 因 Journal 消失误写 NEEDS_HUMAN；新增 12 项一致性测试修复前失败；正常最终化安装失败时 DB 已 READY；清洁路径子进程报 `ModuleNotFoundError: p02_bridge`。
+- 采用 Supervisor 已使用的文件字节锁机制，新增独立 P02 锁载体，不复用 Supervisor 的 PID/O_EXCL 恢复锁，避免重入和锁顺序风险。正常任务在入库前获取 P02 锁，以免开发完成后争锁失败却缺少 Journal。直接最终化和低层恢复入口同样受锁保护；非阻塞争锁明确报告 busy。
+- `_needs_human` 的条件 UPDATE 仅允许 ACCEPTED/FINALIZING；已完成历史行始终保留。Manifest 早期校验失败显式禁用 DB 更新，避免不可信 Job ID 误标另一未完成行，已先红后绿验证。终态不同于证据目标时只诊断；原人工 Marker 不覆盖，新的问题仍由返回结果/日志给出。推进终态使用重新读取状态和 SQLite CAS。
+- 将 Manifest 安装、读回校验与 Journal 清理解耦。正常与恢复均先持久化/验证 Manifest，再条件提交 DB，最后清理 Journal；覆盖安装失败、校验失败、DB 提交失败、提交后清理失败以及只有 Manifest 的未完成行。保留 hard link 协议和原 schema。
+- 子进程用受控绝对 bridge 模块目录；崩溃测试显式 `-I -S`，且自身拒绝缺失 Fake 配置。夹具显式禁止生成字节码，避免 pycache 被 Reviewer 判为篡改，不改变 Reviewer 断言。
+- 定向测试：既有 P02 16、Manifest 15、一致性/进程锁 17、P05 89、清洁导入 15 均通过，10/10 轮并发通过。全部原始失败尝试保留；首轮旧探针因夹具 pycache 未到达竞争窗口，首轮清洁验证因审计器错误假定 Windows argv 为列表失败，修正测试控制器后重新执行，不计为产品通过证据。首次全量 453 项出现 1 项失败（源码根缺少未跟踪 sandbox_status.json），在隔离 worktree 生成显式 NOT_MEASURED 的 BLOCKED 负向夹具后，10 项原安全测试通过；未修改安全断言或读取生产记录。
+- 详细全量结果、审计、剩余风险及各 AC 见 `SS-V01-FINAL-CONC-002-R2-DELIVERY.md`；本地开发自测后停止，等待独立审查。
+- 全量修正后实测 454 项/392.262s，OK (skipped=2)。随后发现外置共享执行日志有 1 条不完整记录，原件保留；改为每 PID 文件和线程锁，产品代码不变，重新全量验证以补齐完整安全审计，不忽略坏行。实现/故障回归合并 A+B 提交 `cdcbc3d943030c8ad88c541456d44f22c91d07ff`，测试可复现性与文档另行 C 提交。
+- 兼容性复核确认 Supervisor 原 tick 会把 P02_BUSY 认领写 done；新根级互斥会增加这一分支的触发机会。先用锁争用夹具实测失败，再仅增加 9 行结果处理，复用 requeued/history，不改锁顺序或恢复入口。释放锁后的下一周期真实 Fake 开发成功，争锁期间 Codex/Publisher 均为 0；P05 90 项/37.781s 通过。补充提交 `ffec8359487537da85294ab630d53be38d5cc36f`，最终全量覆盖此版本。
+- 最终全量 455 项/428.506s，453 PASS、2 SKIPPED，退出码 0；PATH 已单独补测 PASS，真实网络负例 NOT_TESTED。完整分进程审计 5,070 次启动尝试、494 次 Fake Codex、302 次 Fake gh；2 次安全预检在启动前阻断，真实 Codex/gh 放行、Fake 路径违规、生产 Supervisor 和真实 Git push 为 0。32 个恢复 worker 四类禁止调用均为 0；受控竞争 A 后/B 后 DB 与证据文件完全一致。开发自测 PASS、整卡 PARTIAL，停止并等待独立审查。
+
+
+## SS-V01-RELEASE-002-R1 第一阶段（2026-10-24）
+
+最小修正在独立 launcher options 中使用 R2 extra_args，将 windows/network 配置与 effort 同置 exec 后；token 多重集不变，保留 ignore/no-daemon/never/workspace-write。无模型 workspaceWrite + unelevated 已证实，原生读/域内写/域外拒绝 PASS。核验器错误类型换行误判已按原日志修正，未重跑外写。
+
+完整结果见 [第一阶段交付](SS-V01-RELEASE-002-R1-STAGE-1.md)。
+
+
+## SS-V01-RELEASE-002-R1 阶段二停止（2026-10-24）
+
+阶段二外置工具出现两项FAIL：整条shell命令的\bcodex\b扫描命中可执行文件目录codex-runtimes，误杀合法读取；外层预检默认GBK读取UTF-8失败后Shell序列仍启动runner。11项原生策略测试未覆盖这两个控制面，不能据其绿灯宣称观察器完整正确。没有修产品，也未修观察器后重跑。
+
+完整证据见 [停止交付报告](SS-V01-RELEASE-002-R1-STAGE-2.md)。
+
+
+## SS-V01-RELEASE-002-R2（2026-10-24）
+
+F-01用PowerShell原生AST区分外层可执行文件、参数与嵌套调用，动态/编码/反射/不支持的执行安全失败；F-02显式UTF-8并在Windows PS5控制流中强制检查原生退出码与完整成功数据。保留13失败红测、开发夹具失败与28项最终绿测，未启动模型，未修核心。
+
+完整报告：[SS-V01-RELEASE-002-R2.md](SS-V01-RELEASE-002-R2.md)。

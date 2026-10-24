@@ -3,7 +3,20 @@
 > 本文件是**阶段与任务进度**的主记录。
 > 现场状态（PID、心跳、当前分支）看 `docs/AI_HANDOFF.md`；过程与技术决策看 `docs/DEVLOG.md`。
 
+> **发布说明（本同步分支）**：本分支 `docs/ss-v01-handoff-public` 仅同步 4 份交接文档（含本文件），基于真实 `origin/main`（`d524991`）。文中引用的详细交付报告（`docs/SS-V01-RELEASE-002-*.md`、`docs/SS-V01-FINAL-*-DELIVERY.md`）与外置验收工具目录 `scripts/release002_acceptance/`（F-01/F-02 修复）**仅存在于本地分支、尚未发布到 `main`**；仓库路径与解释器路径均因部署而异。请勿据此认为上述内容已公开发布。
+
 ---
+
+## 0. v0.1 发布状态（2026-10-24 文档同步更新 · SS-V01-HANDOFF-SYNC-001）
+
+> 本节为 v0.1 收尾的权威状态摘要；详细证据见 `docs/AI_HANDOFF.md`、`docs/DEVLOG.md` 与各交付报告。
+
+- **v0.1 核心功能开发基本完成**：P00–P05B 与 SS-V01-001～AC-001（安全门禁、测试授权、Reviewer SHA 绑定、Publisher 门禁、P05-C 恢复、AC 证据矩阵）均已交付。
+- **R2 发布候选已建立，但尚未部署**：`release/v0.1.0-rc1` @ `3b8c153a3650dd659b042f2e46f7ac6c11cf6c23`；生产 `main` 仍停在 `d524991f3aceadcbd361b75d19ce08499e27f20a`，v0.1.0 **未发布**。
+- **最后已报告的 R2 回归结果**：RELEASE-002-R1 第一阶段（CLI 修复，`af5177b`）＝ **454 PASS / 1 SKIPPED**（455 项）；并行卡 FINAL-CONC-002 R2（`cdcbc3d` / `ffec835`）＝ **453 PASS / 2 SKIPPED**（455 项）。主产品全量基线仍是 **414 OK**（`main`，SS-V01-AC-001）。**以上均为历史本机实证，本次文档任务（SS-V01-HANDOFF-SYNC-001）未执行任何测试，不得当作新结果。**
+- **CLI 参数布局修复已完成**：`-c` 统一置于 `exec` 之后（`af5177b`），真实 Builder 会话已验证获得正确的 Windows `workspace-write` 沙箱权限（unelevated / never / network=false），详见 `docs/SS-V01-RELEASE-002-R1-STAGE-2.md`。
+- **完整 Builder → 测试 → Reviewer E2E 仍未通过**：RELEASE-002-R1 阶段二被外置观察器误报中断（`6ceae33f`）；RELEASE-002-R2（`d4c87bc`）仅完成外置验收工具（F-01/F-02）修复与 28 项无模型测试，**真实 E2E 仍 `NOT_TESTED`**。
+- **当前尚不能宣布 v0.1.0 正式发布**：发布前置条件（真实 E2E 通过、经授权升级生产 Supervisor、经授权完成 GitHub Draft PR 真实验收）均未满足。
 
 ## 1. 阶段进度
 
@@ -59,9 +72,14 @@
 | SS-V01-005 | 374 |
 | SS-V01-005-R1 | 382 |
 | SS-V01-006（P05-C） | 402 |
-| SS-V01-AC-001 | **414**（当前） |
+| SS-V01-AC-001 | **414**（主产品基线，`main`） |
+| RELEASE-002-R1 STAGE-1（CLI 修复，`af5177b`） | 455 项 / **454 PASS / 1 SKIPPED** |
+| FINAL-CONC-002 R2（`cdcbc3d` / `ffec835`） | 455 项 / **453 PASS / 2 SKIPPED** |
 
-当前基线：`414 OK`（2026-10-24 09:21，`python -m unittest discover -s tests`，SS-V01-AC-001 实测）。
+当前基线：`414 OK`（2026-10-24 09:21，`python -m unittest discover -s tests`，SS-V01-AC-001 实测，主产品 `main`）。
+R2 线在独立分支各自实测：RELEASE-002-R1 STAGE-1 = 454 PASS / 1 SKIPPED（`af5177b`）；FINAL-CONC-002 = 453 PASS / 2 SKIPPED（`cdcbc3d` / `ffec835`）。
+RELEASE-002-R2（`d4c87bc`）只改外置验收工具，**未重跑产品全量**；其 28 项工具回归（17 新 + 11 原）为外置脚本测试，不计入产品基线。
+本次文档任务（SS-V01-HANDOFF-SYNC-001）未运行任何测试，上述数字均为历史实证，不得当作新结果。
 
 ## 4. 报告索引
 
@@ -124,3 +142,58 @@
 
 补写规范：以**当前源码**为唯一依据，逐项与 `bridge/` 实现核对；
 不得照抄历史报告，也不得凭记忆补全字段。
+
+## SS-V01-FINAL-FIX-001 / A（2026-10-24）
+
+- 独立 worktree、分支 `fix/ss-v01-final-fix-001`，基线 `d524991f3aceadcbd361b75d19ce08499e27f20a`。
+- Supervisor Mutex 修复已自测，B 尚未实施，等待整卡独立验收。
+- 新增 8 项锁/真实隔离进程回归通过（35.419s），P05-B/P05-C/实时状态既有 89 项通过（45.487s）。
+- 10/10 轮立即启停成功，每轮第二实例返回 3；并发 `_run` 与并发 `start` 只确认一个有效实例。
+- 证据：开发 worktree 同级 `SoloShip-final-fix-001-evidence/A-before.log`、`A-final.log`、`A-p05-regression.log`。
+
+## SS-V01-FINAL-FIX-001 / B（2026-10-24）
+
+- 恢复路径删除唯一 Journal 的缺陷已复现并修复；与正常最终化共用持久化规则，不改变 Journal schema。
+- 新增 13 项回归通过（41.081s）；既有最终化/完成后恢复 16 项通过（44.552s）。
+- E2E-07/08 组合实测：Fake Codex 完成执行与审查后，真实子进程在 FINALIZING 以 73 退出；恢复生成 Manifest；再删除隔离 report.json 后逐字节重建；恢复 Codex/Publisher 调用均为 0。
+- B 修复前 11 项：9 FAIL、1 ERROR（清理异常未被处理），1 PASS；完整全量回归待两个修复提交后执行。
+- 证据：同级 `SoloShip-final-fix-001-evidence/B-before.log`、`B-final.log`、`B-existing-regression.log`、`E2E-07-08/`。
+
+## SS-V01-FINAL-FIX-001 最终自测收尾（2026-10-24）
+
+- A 提交 `63eac82a526f6dc9b5bc913fba995287e028f14d`；B 提交 `d77ae6267eb30fe9df42a8ef5accab402305b791`。
+- 全量实测 `Ran 435 tests in 446.276s — OK (skipped=2)`，退出码 0：433 PASS、2 skip，无失败/错误。PATH 条件跳过项在当前可信解释器目录的测试 PATH 下补测 PASS（1 项，0.061s），只剩真实 GitHub 网络负例 NOT_TESTED。
+- 全量后复验 E2E-07/08 PASS（3.372s），E2E-10 再次 10/10 次立即启停 PASS（29.486s）。新增测试总计 21 项。
+- A/B 全部验收项开发自测 PASS；整卡结论 PARTIAL（真实网络负例未验证），等待独立验收。未推送、未合并、未发布，不进入 v0.2。
+- 完整报告：`docs/SS-V01-FINAL-FIX-001-DELIVERY.md`。前文 414“当前”与待全量描述均为旧快照；本节为最新结果。
+
+## SS-V01-FINAL-CONC-002 R2（2026-10-24）
+
+- 从 `301886d204be3d5f86565ec9d8e294adf51f9438` 的独立 worktree 实施，分支 `fix/ss-v01-final-concurrency-r2`；原 main 与生产运行目录未修改。
+- F-00～F-03 均复现：共享 P02 文件字节锁、SQLite 条件终态保护、Manifest 安装并验证后再确认 DB、显式子进程导入路径已实现。
+- 定向自测：P02 既有 16 项、Manifest 15 项、新增一致性与进程锁 17 项、P05 90 项通过；`python -I -S` 清洁环境 15 项通过；双进程并发 10/10 轮通过。
+- Supervisor 仅增加 P02_BUSY → requeued 分支，保留历史且不计任务完成；争锁后可正常重试，未改变单实例/恢复锁或锁顺序。
+- 全量及最终安全审计结果见 `docs/SS-V01-FINAL-CONC-002-R2-DELIVERY.md`；等待独立代码审查，不构成人工验收或发布许可。
+- 最终全量 `455 tests / 428.506s — OK (skipped=2)`，退出 0：453 PASS、2 SKIPPED；PATH 条件项另行 0.061s 补测 PASS，真实 GitHub 网络负例 NOT_TESTED。比 435 基线新增 20 项。
+- 最终完整分进程审计 5,070 条启动尝试，真实 Codex/gh 放行、Fake 路径违规、生产 Supervisor、真实 Git push 均 0；32 个恢复 worker 调用均 0，17 场景（含 10 轮）PASS。开发自测 PASS，整卡 PARTIAL（独立审查及未授权外部验证待进行），完成后停止。
+
+
+## SS-V01-RELEASE-002-R1 第一阶段（2026-10-24）
+
+第一阶段 PASS；5 项新启动器回归 PASS、R2 全量 455 项（454 PASS/1 SKIP）。全部 -c 统一 exec 后，未改核心/路由/凭据/全局配置。真实模型0；整卡真实 E2E NOT_TESTED，第二阶段等待新授权。
+
+完整结果见 [第一阶段交付](docs/SS-V01-RELEASE-002-R1-STAGE-1.md)。
+
+
+## SS-V01-RELEASE-002-R1 阶段二停止（2026-10-24）
+
+阶段二一次性真实E2E已执行并停止，整体BLOCKED。首个Builder原生权限正确（unelevated/workspace-write/never/network=false），但外置观察器把pwsh路径codex-runtimes误匹配为Codex命令，主动终止exit125；外层即时预检亦有编码异常后继续启动的控制缺陷。模型1次，Reviewer/Fixer/Explorer0，无Diff/Candidate，DB实际ACCEPTED，原生交付物未生成；不得重跑。
+
+完整证据见 [停止交付报告](docs/SS-V01-RELEASE-002-R1-STAGE-2.md)。
+
+
+## SS-V01-RELEASE-002-R2（2026-10-24）
+
+外置验收工具 F-01/F-02 最小修复 PASS，28项工具回归实际通过，Windows PowerShell 启动控制流实测。真实模型0，真实E2E本轮NOT_TESTED且仍BLOCKED；测试通过后停止。
+
+完整报告：[docs/SS-V01-RELEASE-002-R2.md](docs/SS-V01-RELEASE-002-R2.md)。
